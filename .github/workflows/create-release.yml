@@ -52,14 +52,14 @@ jobs:
       - name: Create Release Branch
         if: inputs.release_type == 'release'
         run: |
-          git checkout develop
+          git checkout origin/develop
           git checkout -b "Release/${{ steps.version.outputs.version }}"
           git push origin "Release/${{ steps.version.outputs.version }}"
 
       - name: Create Hotfix Branch
         if: inputs.release_type == 'hotfix'
         run: |
-          git checkout master
+          git checkout origin/master
           git checkout -b "Hotfix/${{ steps.version.outputs.version }}"
           git push origin "Hotfix/${{ steps.version.outputs.version }}"
 
