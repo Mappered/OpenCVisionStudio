@@ -28,26 +28,30 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git clone --no-checkout https://github.com/Mappered/OpenCVisionStudio.git .
+          git clone --no-checkout ${{ github.server_url }}/${{ github.repository }}.git .
           git fetch --all --tags
 
       - name: Update Aravis Subtree
         if: inputs.subtree == 'aravis'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           BRANCH="external/$(echo ${{ inputs.subtree }} | sed 's/^./\U&/')"
-          git checkout $BRANCH
+          git checkout -B $BRANCH origin/$BRANCH
           git subtree pull --prefix aravis https://github.com/AravisProject/aravis.git main --squash
           git commit -m "chore: update aravis subtree" || echo "No changes to commit"
-          git push origin $BRANCH
+          git push https://git:${GH_TOKEN}@github.com/${{ github.repository }}.git $BRANCH
 
       - name: Update OpenCV Subtree
         if: inputs.subtree == 'opencv'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           BRANCH="external/$(echo ${{ inputs.subtree }} | sed 's/^./\U&/')"
-          git checkout $BRANCH
+          git checkout -B $BRANCH origin/$BRANCH
           git subtree pull --prefix opencv https://github.com/opencv/opencv.git master --squash
           git commit -m "chore: update opencv subtree" || echo "No changes to commit"
-          git push origin $BRANCH
+          git push https://git:${GH_TOKEN}@github.com/${{ github.repository }}.git $BRANCH
 
       - name: Workflow Summary
         run: |
