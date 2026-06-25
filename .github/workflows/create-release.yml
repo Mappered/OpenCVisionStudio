@@ -60,18 +60,22 @@ jobs:
       - name: Create Release Branch
         if: inputs.release_type == 'release'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git checkout -B Develop origin/Develop
           git checkout -B "Release/${{ steps.version.outputs.version }}"
-          git push origin "Release/${{ steps.version.outputs.version }}"
+          git push https://git:${GH_TOKEN}@github.com/${{ github.repository }}.git "Release/${{ steps.version.outputs.version }}"
 
       - name: Create Hotfix Branch
         if: inputs.release_type == 'hotfix'
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           git checkout -B Master origin/Master
           git checkout -B "Hotfix/${{ steps.version.outputs.version }}"
-          git push origin "Hotfix/${{ steps.version.outputs.version }}"
+          git push https://git:${GH_TOKEN}@github.com/${{ github.repository }}.git "Hotfix/${{ steps.version.outputs.version }}"
 
       - name: Create Pull Request
         env:
