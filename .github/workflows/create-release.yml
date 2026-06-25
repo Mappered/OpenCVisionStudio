@@ -28,7 +28,7 @@ jobs:
         run: |
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
-          git clone --no-checkout ${{ github.server_url }}/${{ github.repository }}.git .
+          git clone ${{ github.server_url }}/${{ github.repository }}.git .
           git fetch --all --tags
 
       - name: Determine version
@@ -61,7 +61,6 @@ jobs:
         if: inputs.release_type == 'release'
         shell: bash
         run: |
-          git branch develop origin/develop
           git checkout develop
           git checkout -b "Release/${{ steps.version.outputs.version }}"
           git push origin "Release/${{ steps.version.outputs.version }}"
@@ -70,7 +69,6 @@ jobs:
         if: inputs.release_type == 'hotfix'
         shell: bash
         run: |
-          git branch master origin/master
           git checkout master
           git checkout -b "Hotfix/${{ steps.version.outputs.version }}"
           git push origin "Hotfix/${{ steps.version.outputs.version }}"
