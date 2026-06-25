@@ -1,0 +1,3 @@
+# Give USB3Vision device access to everyone, and create a symlink in /dev/u3v
+SUBSYSTEM=="usb", ATTRS{bDeviceClass}=="ef", ATTRS{bDeviceSubClass}=="02", ATTRS{bDeviceProtocol}=="01",
+        ENV{ID_USB_INTERFACES}=="*:ef0500:*", MODE="0666", SYMLINK+="u3v/by-id/$env{ID_SERIAL}"
