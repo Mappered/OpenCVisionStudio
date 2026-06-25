@@ -8,8 +8,8 @@ on:
         required: true
         type: choice
         options:
-          - release
-          - hotfix
+          - Release
+          - Hotfix
       version_number:
         description: 'Version number (optional, auto-increments if empty)'
         required: false
@@ -57,41 +57,30 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$VERSION"
           Write-Output "Determined version: $VERSION"
 
-      - name: Create Release Branch
-        if: inputs.release_type == 'release'
-        shell: bash
+      - name: Create Branch
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git checkout -B Develop origin/Develop
-          git checkout -B "Release/${{ steps.version.outputs.version }}"
-          git commit --allow-empty -m "Release: Version ${{ steps.version.outputs.version }}"
-          git push https://git:${GH_TOKEN}@github.com/${{ github.repository }}.git "Release/${{ steps.version.outputs.version }}"
-
-      - name: Create Hotfix Branch
-        if: inputs.release_type == 'hotfix'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git checkout -B Master origin/Master
-          git checkout -B "Hotfix/${{ steps.version.outputs.version }}"
-          git commit --allow-empty -m "Hotfix: Version ${{ steps.version.outputs.version }}"
-          git push https://git:${GH_TOKEN}@github.com/${{ github.repository }}.git "Hotfix/${{ steps.version.outputs.version }}"
+          $Version = "${{ steps.version.outputs.version }}"
+          $Type = "${{ inputs.release_type }}"
+          if ($Type -eq "Release") { $BaseBranch = "Develop" }
+          else { $BaseBranch = "Master" }
+          $BranchName = "$Type/$Version"
+          git checkout -B $BaseBranch "origin/$BaseBranch"
+          git checkout -B $BranchName
+          git commit --allow-empty -m "$Type`: Version $Version"
+          git push "https://git:$env:GH_TOKEN@github.com/${{ github.repository }}.git" $BranchName
 
       - name: Create Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          if ("${{ inputs.release_type }}" -eq "release") {
-            $BRANCH_NAME = "Release/${{ steps.version.outputs.version }}"
-          } else {
-            $BRANCH_NAME = "Hotfix/${{ steps.version.outputs.version }}"
-          }
+            $BRANCH_NAME = "${{ inputs.release_type }}/${{ steps.version.outputs.version }}"
           
           gh pr create `
-            --base master `
+            --base Master `
             --head $BRANCH_NAME `
             --title "${{ inputs.release_type }}: ${{ steps.version.outputs.version }}" `
             --body "Automated ${{ inputs.release_type }} PR for version ${{ steps.version.outputs.version }}"
