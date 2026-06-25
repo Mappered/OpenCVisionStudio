@@ -61,7 +61,7 @@ jobs:
         if: inputs.release_type == 'release'
         shell: bash
         run: |
-          git checkout develop
+          git checkout -b develop origin/develop
           git checkout -b "Release/${{ steps.version.outputs.version }}"
           git push origin "Release/${{ steps.version.outputs.version }}"
 
@@ -69,7 +69,7 @@ jobs:
         if: inputs.release_type == 'hotfix'
         shell: bash
         run: |
-          git checkout master
+          git checkout -b master origin/master
           git checkout -b "Hotfix/${{ steps.version.outputs.version }}"
           git push origin "Hotfix/${{ steps.version.outputs.version }}"
 
