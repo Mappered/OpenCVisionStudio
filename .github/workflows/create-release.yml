@@ -1,0 +1,84 @@
+name: Create Release or Hotfix
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        type: choice
+        options:
+          - release
+          - hotfix
+      version_number:
+        description: 'Version number (optional, auto-increments if empty)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure Git
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git clone --no-checkout https://github.com/Mappered/OpenCVisionStudio.git .
+          git fetch --all --tags
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -z "${{ inputs.version_number }}" ]; then
+            LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+            echo "Last tag: $LAST_TAG"
+            
+            if [ "${{ inputs.release_type }}" == "release" ]; then
+              VERSION=$(echo $LAST_TAG | awk -F. '{print $1 "." ($2+1) ".0.0"}')
+            else
+              VERSION=$(echo $LAST_TAG | awk -F. '{print $1 "." $2 "." ($3+1) ".0"}')
+            fi
+          else
+            VERSION="${{ inputs.version_number }}"
+          fi
+          
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Determined version: $VERSION"
+
+      - name: Create Release Branch
+        if: inputs.release_type == 'release'
+        run: |
+          git checkout develop
+          git checkout -b "Release/${{ steps.version.outputs.version }}"
+          git push origin "Release/${{ steps.version.outputs.version }}"
+
+      - name: Create Hotfix Branch
+        if: inputs.release_type == 'hotfix'
+        run: |
+          git checkout master
+          git checkout -b "Hotfix/${{ steps.version.outputs.version }}"
+          git push origin "Hotfix/${{ steps.version.outputs.version }}"
+
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH_NAME=$(if [ "${{ inputs.release_type }}" == "release" ]; then echo "Release/${{ steps.version.outputs.version }}"; else echo "Hotfix/${{ steps.version.outputs.version }}"; fi)
+          
+          gh pr create \
+            --base master \
+            --head $BRANCH_NAME \
+            --title "${{ inputs.release_type }}: ${{ steps.version.outputs.version }}" \
+            --body "Automated ${{ inputs.release_type }} PR for version ${{ steps.version.outputs.version }}"
+
+      - name: Workflow Summary
+        run: |
+          echo "Release/Hotfix branch created successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Type:** ${{ inputs.release_type }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Branch:** $(if [ "${{ inputs.release_type }}" == "release" ]; then echo "Release/${{ steps.version.outputs.version }}"; else echo "Hotfix/${{ steps.version.outputs.version }}"; fi)" >> $GITHUB_STEP_SUMMARY
