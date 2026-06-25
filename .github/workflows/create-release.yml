@@ -77,8 +77,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-            $BRANCH_NAME = "${{ inputs.release_type }}/${{ steps.version.outputs.version }}"
-          
+          $BRANCH_NAME = "${{ inputs.release_type }}/${{ steps.version.outputs.version }}"        
           gh pr create `
             --base Master `
             --head $BRANCH_NAME `
