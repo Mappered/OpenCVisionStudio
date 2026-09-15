@@ -166,7 +166,7 @@ generate_enum_types() {
 
 	glib-mkenums \
 		--fhead "#include <arvapi.h>\n#include \"$source_include\"\n\n#define C_ENUM(v) ((gint) v)\n#define C_FLAGS(v) ((guint) v)\n" \
-		--fprod "\n/* enumerations from \"@filename@\" */\n" \
+		--fprod "\n/* enumerations from \"@filename@\" */\n#include \"@filename@\"\n" \
 		--vhead "static const G@Type@Value _@enum_name@_values[] = {\n" \
 		--vprod "  { C_@TYPE@ (@VALUENAME@), \"@VALUENAME@\", \"@valuenick@\" },\n" \
 		--vtail "  { 0, NULL, NULL }\n};\n\nGType\n@enum_name@_get_type (void)\n{\n  static gsize type_id = 0;\n\n  if (g_once_init_enter (&type_id)) {\n    GType id = g_@type@_register_static (\"@EnumName@\", _@enum_name@_values);\n    g_once_init_leave (&type_id, id);\n  }\n\n  return type_id;\n}\n\n" \
