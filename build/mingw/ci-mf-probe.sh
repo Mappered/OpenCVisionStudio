@@ -111,4 +111,29 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 	} >> "$GITHUB_STEP_SUMMARY"
 fi
 
+# ---------------------------------------------------------------------------
+# Dynamic resolution: the header shortage does not matter if the OS exports the
+# function. This build needs no MF headers at all, so it always runs.
+# ---------------------------------------------------------------------------
+echo '=== Windows 11 virtual camera via dynamic resolution ==='
+gcc -O1 -Wall -Wextra -o "$out_dir/mf-vcam-dyn.exe" "$repo_root/build/mingw/mf-vcam-dyn.c" -lole32
+"$out_dir/mf-vcam-dyn.exe" || echo "warning: dynamic virtual camera probe exited non-zero" >&2
+vcam_line=$("$out_dir/mf-vcam-dyn.exe" 2>/dev/null | grep '^VCAM_PROBE ' | tail -n1 || true)
+echo "probe line: ${vcam_line:-none}"
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+	{
+		echo ''
+		echo '### Dynamic virtual camera resolution'
+		echo ''
+		echo '```'
+		echo "${vcam_line:-VCAM_PROBE (no output)}"
+		echo '```'
+		echo ''
+		echo 'exported=1 with any HRESULT means the OS offers the API and our own'
+		echo 'declarations reached it. E_ACCESSDENIED is the expected answer for an'
+		echo 'unpackaged process and confirms the signature matches.'
+	} >> "$GITHUB_STEP_SUMMARY"
+fi
+
 echo 'Media Foundation probe passed'
