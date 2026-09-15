@@ -69,7 +69,11 @@ mkdir -p "$build_dir" "$staging" "$dist"
 
 build_args=(--build_wasm --disable_single_file --config "$opencv_dir/platforms/js/opencv_js.config.py")
 [ "$simd" = "true" ] && build_args+=(--simd)
-for option in "-DBUILD_LIST=$modules" -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF; do
+# -DCMAKE_CXX_STANDARD=17 is required, not cosmetic: recent emscripten needs
+# C++17 for Embind and OpenCV still defaults to C++11, which aborts the
+# configure step with an explicit error.
+for option in "-DBUILD_LIST=$modules" -DCMAKE_CXX_STANDARD=17 \
+	-DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF; do
 	build_args+=(--cmake_option="$option")
 done
 
