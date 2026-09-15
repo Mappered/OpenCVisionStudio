@@ -20,7 +20,12 @@ on:
   workflow_call:
 
 permissions:
-  contents: read
+  # Needed to publish the test kit to the artifacts branch. The other workflows
+  # that publish use the same token and permission.
+  contents: write
+
+env:
+  PLATFORM_TAG: win-x64
 
 jobs:
   probe:
