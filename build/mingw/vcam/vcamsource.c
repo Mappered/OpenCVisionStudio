@@ -76,6 +76,13 @@ static const GUID kPinCategoryCapture = {
 	0x65E8773D, 0x8F56, 0x11D0, { 0xA3, 0xB9, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 }
 };
 
+/* {F0273718-4A4D-4AC5-A15D-305EB5E90667} - MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES,
+ * a UINT32 the frame server reads while bringing a virtual camera up. Also not
+ * declared in this toolchain's headers. */
+static const GUID kMFVirtualcameraProvideAssociatedCameraSources = {
+	0xF0273718, 0x4A4D, 0x4AC5, { 0xA1, 0x5D, 0x30, 0x5E, 0xB5, 0xE9, 0x06, 0x67 }
+};
+
 static HMODULE g_module = NULL;
 static LONG g_object_count = 0;
 
@@ -926,10 +933,8 @@ typedef struct VcamActivator {
 	}
 
 ACTIVATOR_ATTR_FORWARD(GetItem, (IMFAttributes *This, REFGUID key, PROPVARIANT *value), (self->attributes, key, value))
-ACTIVATOR_ATTR_FORWARD(GetItemType, (IMFAttributes *This, REFGUID key, MF_ATTRIBUTE_TYPE *type), (self->attributes, key, type))
 ACTIVATOR_ATTR_FORWARD(CompareItem, (IMFAttributes *This, REFGUID key, REFPROPVARIANT value, BOOL *result), (self->attributes, key, value, result))
 ACTIVATOR_ATTR_FORWARD(Compare, (IMFAttributes *This, IMFAttributes *theirs, MF_ATTRIBUTES_MATCH_TYPE match, BOOL *result), (self->attributes, theirs, match, result))
-ACTIVATOR_ATTR_FORWARD(GetUINT32, (IMFAttributes *This, REFGUID key, UINT32 *value), (self->attributes, key, value))
 ACTIVATOR_ATTR_FORWARD(GetUINT64, (IMFAttributes *This, REFGUID key, UINT64 *value), (self->attributes, key, value))
 ACTIVATOR_ATTR_FORWARD(GetDouble, (IMFAttributes *This, REFGUID key, double *value), (self->attributes, key, value))
 ACTIVATOR_ATTR_FORWARD(GetGUID, (IMFAttributes *This, REFGUID key, GUID *value), (self->attributes, key, value))
@@ -957,6 +962,27 @@ ACTIVATOR_ATTR_FORWARD(GetItemByIndex, (IMFAttributes *This, UINT32 index, GUID 
 ACTIVATOR_ATTR_FORWARD(CopyAllItems, (IMFAttributes *This, IMFAttributes *destination), (self->attributes, destination))
 
 static HRESULT vcam_activator_create(IUnknown *outer, REFIID riid, void **out);
+
+/* These two are logged with the key, because which attribute the frame server
+ * asks for is the whole question when it finds one missing. */
+static HRESULT STDMETHODCALLTYPE activator_GetItemType(IMFAttributes *This, REFGUID key,
+                                                      MF_ATTRIBUTE_TYPE *type)
+{
+	VcamActivator *self = (VcamActivator *)This;
+	HRESULT hr = IMFAttributes_GetItemType(self->attributes, key, type);
+	vcam_log("activator GetItemType key={%08lx-%04x-%04x} -> 0x%08lx",
+	         (unsigned long)key->Data1, (unsigned)key->Data2, (unsigned)key->Data3, (unsigned long)hr);
+	return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE activator_GetUINT32(IMFAttributes *This, REFGUID key, UINT32 *value)
+{
+	VcamActivator *self = (VcamActivator *)This;
+	HRESULT hr = IMFAttributes_GetUINT32(self->attributes, key, value);
+	vcam_log("activator GetUINT32 key={%08lx-%04x-%04x} -> 0x%08lx",
+	         (unsigned long)key->Data1, (unsigned)key->Data2, (unsigned)key->Data3, (unsigned long)hr);
+	return hr;
+}
 
 static HRESULT STDMETHODCALLTYPE activator_query_interface(IMFAttributes *This, REFIID riid, void **out)
 {
@@ -1103,6 +1129,13 @@ static HRESULT vcam_activator_create(IUnknown *outer, REFIID riid, void **out)
 	/* A friendly name is cheap and makes the object identifiable while
 	 * debugging; the real identity is the CLSID. */
 	IMFAttributes_SetString(self->attributes, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, VCAM_FRIENDLY_NAME);
+	/* A capture source announces its type, and says whether it provides
+	 * associated camera sources. The frame server reads the latter as a UINT32
+	 * and crashing on a null in FrameServerMonitorClient when it is absent is
+	 * what put us on to it. */
+	IMFAttributes_SetGUID(self->attributes, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+	                      &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+	IMFAttributes_SetUINT32(self->attributes, &kMFVirtualcameraProvideAssociatedCameraSources, 0);
 	InterlockedIncrement(&g_object_count);
 	hr = activator_query_interface((IMFAttributes *)self, riid, out);
 	activator_release((IMFAttributes *)self);
