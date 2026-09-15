@@ -52,6 +52,23 @@ static const GUID kIID_IMFMediaSourceEx = {
 	0x3C9B2EB9, 0x86D5, 0x4514, { 0xA3, 0x94, 0xF5, 0x66, 0x64, 0xF9, 0xF0, 0xD8 }
 };
 
+/* Attribute keys this toolchain does not declare, with values taken from
+ * Microsoft's mfidl.h and mfapi.h. The frame server classifies a stream by
+ * MF_DEVICESTREAM_STREAM_CATEGORY, and it refuses a source whose stream carries
+ * no capture pin category - before it ever calls Start on it. */
+static const GUID kMFDevicestreamStreamCategory = {
+	0x2939E7B8, 0xA62E, 0x4579, { 0xB6, 0x74, 0xD4, 0x07, 0x3D, 0xFA, 0xBB, 0xBA }
+};
+static const GUID kMFDevicestreamStreamId = {
+	0x11BD5120, 0xD124, 0x446B, { 0x88, 0xE6, 0x17, 0x06, 0x02, 0x57, 0xFF, 0xF9 }
+};
+static const GUID kMFDevicestreamFrameserverShared = {
+	0x1CB378E9, 0xB279, 0x41D4, { 0xAF, 0x97, 0x34, 0xA2, 0x43, 0xE6, 0x83, 0x20 }
+};
+static const GUID kMFDevicestreamFrameSourceTypes = {
+	0x17145FD1, 0x1B2B, 0x423C, { 0x80, 0x01, 0x2B, 0x68, 0x33, 0xED, 0x35, 0x88 }
+};
+
 static HMODULE g_module = NULL;
 static LONG g_object_count = 0;
 
@@ -597,10 +614,10 @@ static HRESULT source_build_presentation(VcamSource *self)
 		 * pin category it does not treat the source as a camera at all, which
 		 * is why it refused the source before ever calling Start on it. */
 		IMFAttributes *stream_attributes = (IMFAttributes *)self->stream_descriptor;
-		IMFAttributes_SetGUID(stream_attributes, &MF_DEVICESTREAM_STREAM_CATEGORY, &PINNAME_VIDEO_CAPTURE);
-		IMFAttributes_SetUINT32(stream_attributes, &MF_DEVICESTREAM_STREAM_ID, 0);
-		IMFAttributes_SetUINT32(stream_attributes, &MF_DEVICESTREAM_FRAMESERVER_SHARED, 1);
-		IMFAttributes_SetUINT32(stream_attributes, &MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, 1);
+		IMFAttributes_SetGUID(stream_attributes, &kMFDevicestreamStreamCategory, &PINNAME_VIDEO_CAPTURE);
+		IMFAttributes_SetUINT32(stream_attributes, &kMFDevicestreamStreamId, 0);
+		IMFAttributes_SetUINT32(stream_attributes, &kMFDevicestreamFrameserverShared, 1);
+		IMFAttributes_SetUINT32(stream_attributes, &kMFDevicestreamFrameSourceTypes, 1);
 	}
 	if (SUCCEEDED(hr))
 		hr = IMFStreamDescriptor_GetMediaTypeHandler(self->stream_descriptor, &handler);
