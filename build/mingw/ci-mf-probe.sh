@@ -38,7 +38,7 @@ done
 [ "$found" -ge 5 ] || { echo 'Media Foundation headers are not available in this MinGW toolchain' >&2; exit 1; }
 
 echo "=== which import libraries are present? ==="
-for library in libmfplat.a libmfreadwrite.a libmfuuid.a libole32.a liboleaut32.a libuuid.a libstrmiids.a; do
+for library in libmf.a libmfplat.a libmfreadwrite.a libmfuuid.a libole32.a liboleaut32.a libuuid.a libstrmiids.a; do
 	if [ -f "/mingw64/lib/$library" ] || [ -f "/mingw64/lib/$library.dll.a" ]; then
 		echo "ok   $library"
 	else
@@ -46,10 +46,25 @@ for library in libmfplat.a libmfreadwrite.a libmfuuid.a libole32.a liboleaut32.a
 	fi
 done
 
+# Which import library actually exports each entry point we need? MF splits its
+# API across mf.dll and mfplat.dll, and guessing wrong shows up as an undefined
+# reference at link time. Report it instead of guessing.
+echo '=== locating Media Foundation entry points ==='
+for symbol in MFStartup MFCreateAttributes MFEnumDeviceSources MFGetService; do
+	hits=""
+	for library in /mingw64/lib/libmf.a /mingw64/lib/libmfplat.a /mingw64/lib/libmfreadwrite.a; do
+		[ -f "$library" ] || continue
+		if nm -g --defined-only "$library" 2>/dev/null | grep -Eq "[ _]${symbol}$"; then
+			hits="$hits $(basename "$library")"
+		fi
+	done
+	echo "  $symbol ->${hits:- not found in any import library}"
+done
+
 echo '=== build ==='
 mkdir -p "$out_dir"
 gcc -O1 -Wall -Wextra -o "$out_dir/mf-probe.exe" "$source_file" \
-	-lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid -lstrmiids
+	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid -lstrmiids
 echo "linked $out_dir/mf-probe.exe"
 
 echo '=== run (a runner has no cameras; zero devices is success) ==='
