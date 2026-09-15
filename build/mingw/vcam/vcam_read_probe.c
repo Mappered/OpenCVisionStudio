@@ -10,6 +10,11 @@
  * No camera and no GUI are involved, which is what makes this usable in CI.
  */
 
+/* CINTERFACE and COBJMACROS must be defined before the Media Foundation headers
+ * are pulled in, otherwise the IFoo_Method(...) helpers never exist and every
+ * call looks like an implicit declaration. */
+#define CINTERFACE
+#define COBJMACROS
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <objbase.h>
