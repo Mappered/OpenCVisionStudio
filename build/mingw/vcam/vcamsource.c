@@ -51,6 +51,73 @@ typedef struct VcamSource VcamSource;
 typedef struct VcamStream VcamStream;
 
 /* ------------------------------------------------------------------ */
+/* Trace                                                              */
+/* ------------------------------------------------------------------ */
+
+/* The media source runs inside the frame server's process, so its stdout would
+ * never reach our CI log. Writing to a file the probe can print afterwards is
+ * what makes the server's behaviour observable at all - and that trace is how
+ * we learn which interfaces it asks for. */
+static FILE *g_log = NULL;
+
+static void vcam_log_open(void)
+{
+	wchar_t path[MAX_PATH];
+	DWORD length;
+
+	if (g_log)
+		return;
+	length = GetEnvironmentVariableW(L"VCAM_LOG_FILE", path, MAX_PATH);
+	if (length == 0 || length >= MAX_PATH) {
+		/* Default: alongside the DLL. The frame server is a separate process
+		 * that never inherits our environment, but it can always write next to
+		 * the module it loaded, and CI knows that path. */
+		DWORD module_length = GetModuleFileNameW(g_module, path, MAX_PATH);
+		if (module_length == 0 || module_length >= MAX_PATH - 5)
+			return;
+		wcscat(path, L".log");
+	}
+	g_log = _wfopen(path, L"a");
+}
+
+static const char *iid_name(REFIID riid)
+{
+	if (IsEqualIID(riid, &IID_IUnknown)) return "IUnknown";
+	if (IsEqualIID(riid, &IID_IClassFactory)) return "IClassFactory";
+	if (IsEqualIID(riid, &IID_IMFMediaSource)) return "IMFMediaSource";
+	if (IsEqualIID(riid, &IID_IMFMediaStream)) return "IMFMediaStream";
+	if (IsEqualIID(riid, &IID_IMFMediaEventGenerator)) return "IMFMediaEventGenerator";
+	if (IsEqualIID(riid, &IID_IMFAttributes)) return "IMFAttributes";
+	if (IsEqualIID(riid, &IID_IMFGetService)) return "IMFGetService";
+	if (IsEqualIID(riid, &IID_IMFMediaSourceEx)) return "IMFMediaSourceEx";
+	if (IsEqualIID(riid, &IID_IMFSampleAllocatorControl)) return "IMFSampleAllocatorControl";
+	if (IsEqualIID(riid, &IID_IMFRealTimeClient)) return "IMFRealTimeClient";
+	if (IsEqualIID(riid, &IID_IMFQualityAdvise)) return "IMFQualityAdvise";
+	if (IsEqualIID(riid, &IID_IMFShutdown)) return "IMFShutdown";
+	return "(other)";
+}
+
+static void vcam_log(const char *format, ...)
+{
+	va_list args;
+	vcam_log_open();
+	if (!g_log)
+		return;
+	va_start(args, format);
+	vfprintf(g_log, format, args);
+	va_end(args);
+	fputc('\n', g_log);
+	fflush(g_log);
+}
+
+static void vcam_log_iid(const char *what, REFIID riid, HRESULT hr)
+{
+	vcam_log("%s riid=%s {%08lx-%04x-%04x} -> 0x%08lx", what, iid_name(riid),
+	         (unsigned long)riid->Data1, (unsigned)riid->Data2, (unsigned)riid->Data3,
+	         (unsigned long)hr);
+}
+
+/* ------------------------------------------------------------------ */
 /* Synthetic frame generator                                          */
 /* ------------------------------------------------------------------ */
 
@@ -197,6 +264,7 @@ static void stream_release_internal(VcamStream *self)
 static HRESULT STDMETHODCALLTYPE stream_query_interface(void *This, REFIID riid, void **out)
 {
 	VcamStream *self = (VcamStream *)This;
+	HRESULT hr = E_NOINTERFACE;
 	if (!out)
 		return E_POINTER;
 	*out = NULL;
@@ -204,9 +272,10 @@ static HRESULT STDMETHODCALLTYPE stream_query_interface(void *This, REFIID riid,
 	    IsEqualIID(riid, &IID_IMFMediaStream)) {
 		*out = self;
 		InterlockedIncrement(&self->refcount);
-		return S_OK;
+		hr = S_OK;
 	}
-	return E_NOINTERFACE;
+	vcam_log_iid("stream QueryInterface", riid, hr);
+	return hr;
 }
 
 static ULONG STDMETHODCALLTYPE stream_add_ref(void *This)
@@ -299,6 +368,8 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 	BYTE *pixels = NULL;
 	HRESULT hr;
 
+	vcam_log("stream RequestSample (#%llu)", (unsigned long long)self->frame_index);
+
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
 	if (self->state != 2)
@@ -388,6 +459,7 @@ static void source_destroy(VcamSource *self)
 static HRESULT STDMETHODCALLTYPE source_query_interface(void *This, REFIID riid, void **out)
 {
 	VcamSource *self = (VcamSource *)This;
+	HRESULT hr = E_NOINTERFACE;
 	if (!out)
 		return E_POINTER;
 	*out = NULL;
@@ -395,9 +467,10 @@ static HRESULT STDMETHODCALLTYPE source_query_interface(void *This, REFIID riid,
 	    IsEqualIID(riid, &IID_IMFMediaSource)) {
 		*out = self;
 		InterlockedIncrement(&self->refcount);
-		return S_OK;
+		hr = S_OK;
 	}
-	return E_NOINTERFACE;
+	vcam_log_iid("source QueryInterface", riid, hr);
+	return hr;
 }
 
 static ULONG STDMETHODCALLTYPE source_add_ref(void *This)
@@ -467,6 +540,7 @@ static HRESULT STDMETHODCALLTYPE source_get_characteristics(void *This, DWORD *c
 	if (!characteristics)
 		return E_POINTER;
 	*characteristics = MFMEDIASOURCE_IS_LIVE;
+	vcam_log("source GetCharacteristics -> MFMEDIASOURCE_IS_LIVE");
 	return S_OK;
 }
 
@@ -524,6 +598,7 @@ static HRESULT STDMETHODCALLTYPE source_create_presentation_descriptor(void *Thi
 		return hr;
 	*descriptor = self->descriptor;
 	IMFPresentationDescriptor_AddRef(*descriptor);
+	vcam_log("source CreatePresentationDescriptor -> ok (%dx%d RGB32)", VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
 	return S_OK;
 }
 
@@ -565,6 +640,8 @@ static HRESULT STDMETHODCALLTYPE source_start(void *This, IMFPresentationDescrip
 	(void)descriptor;
 	(void)time_format;
 
+	vcam_log("source Start (state=%lu)", (unsigned long)self->state);
+
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
 
@@ -585,6 +662,7 @@ static HRESULT STDMETHODCALLTYPE source_start(void *This, IMFPresentationDescrip
 		self->stream->state = 2;
 		hr = plumbing_queue_param_var(&p, MEStreamStarted, kNullGuid, S_OK, start_position);
 	}
+	vcam_log("source Start -> 0x%08lx", (unsigned long)hr);
 	return hr;
 }
 
@@ -592,6 +670,7 @@ static HRESULT STDMETHODCALLTYPE source_stop(void *This)
 {
 	VcamSource *self = (VcamSource *)This;
 	EventPlumbing p;
+	vcam_log("source Stop (state=%lu)", (unsigned long)self->state);
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
 	if (self->state == 1)
@@ -610,6 +689,7 @@ static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 {
 	VcamSource *self = (VcamSource *)This;
 	EventPlumbing p;
+	vcam_log("source Pause (state=%lu)", (unsigned long)self->state);
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
 	if (self->state != 2)
@@ -627,6 +707,7 @@ static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
 {
 	VcamSource *self = (VcamSource *)This;
+	vcam_log("source Shutdown");
 	self->state = 4;
 	if (self->stream) {
 		self->stream->state = 4;
@@ -692,15 +773,17 @@ typedef struct VcamClassFactory {
 
 static HRESULT STDMETHODCALLTYPE factory_query_interface(IClassFactory *This, REFIID riid, void **out)
 {
+	HRESULT hr = E_NOINTERFACE;
 	if (!out)
 		return E_POINTER;
 	*out = NULL;
 	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IClassFactory)) {
 		*out = This;
 		InterlockedIncrement(&((VcamClassFactory *)This)->refcount);
-		return S_OK;
+		hr = S_OK;
 	}
-	return E_NOINTERFACE;
+	vcam_log_iid("factory QueryInterface", riid, hr);
+	return hr;
 }
 
 static ULONG STDMETHODCALLTYPE factory_add_ref(IClassFactory *This)
@@ -764,6 +847,8 @@ __declspec(dllexport) HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID ri
 
 	/* Media Foundation may not be started in the hosting process yet. */
 	MFStartup(MF_VERSION, MFSTARTUP_LITE);
+
+	vcam_log_iid("DllGetClassObject", riid, S_OK);
 
 	factory = (VcamClassFactory *)calloc(1, sizeof(VcamClassFactory));
 	if (!factory)

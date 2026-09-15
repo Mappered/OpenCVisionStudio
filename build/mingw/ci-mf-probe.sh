@@ -193,9 +193,20 @@ echo "register line: ${register_line:-none}"
 echo '=== virtual camera end to end (publish, enumerate, read a frame) ==='
 gcc -O1 -Wall -Wextra -o "$out_dir/vcam-read.exe" "$vcam_dir/vcam_read_probe.c" \
 	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid
+rm -f "$out_dir/vcamsource.dll.log"
 "$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read.log" || true
 read_line=$(grep '^VCAM_READ ' "$out_dir/vcam-read.log" | tail -n1 || true)
 echo "read line: ${read_line:-none}"
+
+# The media source runs inside the frame server's process, so it traces to a
+# file next to the DLL. That trace is the only view we get of what the server
+# does with our object.
+echo '--- media source trace ---'
+if [ -f "$out_dir/vcamsource.dll.log" ]; then
+	cat "$out_dir/vcamsource.dll.log"
+else
+	echo '(no trace: the media source was never loaded)'
+fi
 
 echo '=== unregistering (leave the runner clean) ==='
 "$out_dir/vcam-register.exe" unregister || true
