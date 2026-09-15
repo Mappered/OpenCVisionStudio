@@ -911,6 +911,7 @@ typedef struct VcamActivator {
 	LONG refcount;
 	IMFAttributes *attributes;
 	VcamSource *source;
+	int trace_attributes;   /* attribute reads are chatty; only trace on demand */
 } VcamActivator;
 
 /* The attribute methods are forwarded to a real IMFAttributes rather than
@@ -919,6 +920,8 @@ typedef struct VcamActivator {
 	static HRESULT STDMETHODCALLTYPE activator_##name decl \
 	{ \
 		VcamActivator *self = (VcamActivator *)This; \
+		if (self->trace_attributes) \
+			vcam_log("activator attribute " #name); \
 		return IMFAttributes_##name call; \
 	}
 
@@ -1091,6 +1094,7 @@ static HRESULT vcam_activator_create(IUnknown *outer, REFIID riid, void **out)
 		return E_OUTOFMEMORY;
 	self->lpVtbl = &vcam_activator_vtbl;
 	self->refcount = 1;
+	self->trace_attributes = 1;
 	hr = MFCreateAttributes(&self->attributes, 2);
 	if (FAILED(hr)) {
 		free(self);

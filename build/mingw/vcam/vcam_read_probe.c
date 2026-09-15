@@ -30,6 +30,35 @@
 #include "mfvcam.h"
 #include "vcam_clsid.h"
 
+/* Without a debugger, the faulting module and offset are the difference between
+ * guessing and knowing. The frame server activates our CLSID inside this
+ * process, so a fault here may be our media source or Windows' own code. */
+static LONG WINAPI crash_handler(EXCEPTION_POINTERS *info)
+{
+	HMODULE module = NULL;
+	wchar_t module_path[MAX_PATH] = L"<unknown>";
+	void *address = NULL;
+
+	if (info && info->ExceptionRecord) {
+		address = (void *)info->ExceptionRecord->ExceptionAddress;
+		if (address &&
+		    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+		                       GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		                       (LPCWSTR)address, &module) && module) {
+			GetModuleFileNameW(module, module_path, MAX_PATH);
+		}
+		fprintf(stderr, "CRASH code=0x%08lx address=%p module=",
+		        (unsigned long)info->ExceptionRecord->ExceptionCode, address);
+		fwprintf(stderr, L"%ls\n", module_path);
+		if (info->ExceptionRecord->NumberParameters >= 2) {
+			fprintf(stderr, "CRASH access=%p\n",
+			        (void *)info->ExceptionRecord->ExceptionInformation[1]);
+		}
+		fflush(stderr);
+	}
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
 int main(void)
 {
 	IMFAttributes *attributes = NULL;
@@ -52,6 +81,8 @@ int main(void)
 	HRESULT started = E_FAIL;
 
 	setvbuf(stdout, NULL, _IONBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
+	SetUnhandledExceptionFilter(crash_handler);
 
 	hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	printf("CoInitializeEx: 0x%08lx\n", (unsigned long)hr);
