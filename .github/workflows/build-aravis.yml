@@ -77,6 +77,9 @@ jobs:
           git fetch --quiet --depth 1 origin $sourceRef
           git checkout --force --quiet FETCH_HEAD
           $sourceCommit = (git rev-parse HEAD).Trim()
+          # Computed here rather than in the shell script: git is not part of the
+          # MSYS2 environment, so asking for this from bash yields nothing.
+          $subtreeTree = (git rev-parse 'HEAD:aravis').Trim()
 
           # The build recipe lives on the same ref as this workflow file, which
           # is not the ref that holds the aravis subtree.
@@ -94,7 +97,8 @@ jobs:
 
           "BUILD_SOURCE_COMMIT=$sourceCommit" >> $env:GITHUB_ENV
           "BUILD_SOURCE_REF=$sourceRef"       >> $env:GITHUB_ENV
-          Write-Host "aravis $sourceCommit ($sourceRef), recipe $recipeCommit ($recipeRef)"
+          "BUILD_SUBTREE_TREE=$subtreeTree"   >> $env:GITHUB_ENV
+          Write-Host "aravis $sourceCommit ($sourceRef) subtree $subtreeTree, recipe $recipeCommit ($recipeRef)"
 
       # The windows runner image normally ships MSYS2; install it only if not.
       - name: Locate MSYS2
@@ -161,7 +165,10 @@ jobs:
             }
           }
           $packages = @($packages | Sort-Object package, version, platform)
-          [IO.File]::WriteAllText((Join-Path $checkout 'manifest.json'), (($packages | ConvertTo-Json -Depth 6) + "`n"))
+          # -InputObject with an explicit array, so a single package still
+          # serialises as a JSON list instead of a bare object.
+          $manifest = @{ packages = @($packages) } | ConvertTo-Json -Depth 6
+          [IO.File]::WriteAllText((Join-Path $checkout 'manifest.json'), ($manifest + "`n"))
 
           $rows = @()
           foreach ($p in $packages) { $rows += "| $($p.package) | $($p.version) | $($p.platform) | $($p.toolchain) | $($p.built_utc) |" }
