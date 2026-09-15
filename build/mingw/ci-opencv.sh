@@ -119,6 +119,26 @@ echo "relocated $relocated file(s) into bin/ and lib/"
 # library and run it. This is what catches an empty export table, which is
 # exactly how the Aravis DLL first failed.
 # ---------------------------------------------------------------------------
+# pkg-config metadata: OpenCV only generates opencv4.pc for unix-style installs,
+# so write one here. Consumers can then treat aravis and opencv identically.
+mkdir -p "$staging/lib/pkgconfig"
+libs_line=""
+for m in $(echo "$modules" | tr ',' ' '); do
+	libs_line="$libs_line -lopencv_${m}${suffix}"
+done
+cat > "$staging/lib/pkgconfig/opencv4.pc" <<EOF
+prefix=$staging
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: OpenCV
+Description: OpenCV, minimal MinGW build (modules:$modules)
+Version: $version
+Libs: -L\${libdir}$libs_line
+Cflags: -I\${includedir}
+EOF
+
 echo '=== validate ==='
 fail=0
 check() {
