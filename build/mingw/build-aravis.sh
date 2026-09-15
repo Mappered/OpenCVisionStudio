@@ -86,6 +86,10 @@ read -r -a dep_libs   <<<"$(pkg-config --libs   $devel_pkgs)"
 arv_api='extern __attribute__ ((visibility ("default")))'
 
 cflags=(
+	# Pinned deliberately: recent GCC defaults to C23, where implicit function
+	# declarations and other 1990s idioms in this vintage of the codebase become
+	# errors. gnu17 is what upstream's own builds assume.
+	-std=gnu17
 	-O2
 	-DNDEBUG
 	-DARAVIS_COMPILATION
@@ -188,12 +192,23 @@ grep -q 'ARV_TYPE_GVCP_PACKET_TYPE' "$gen_dir/arvenumtypes.h" "$gen_dir/arvenumt
 # ---------------------------------------------------------------------------
 # GResources (gnome.compile_resources equivalent)
 # ---------------------------------------------------------------------------
+# glib-compile-resources writes one output per invocation and selects it with
+# --target; there is no --header option, so this is two passes.
 ( cd "$src_src" && glib-compile-resources \
 	--sourcedir=. \
 	--c-name arvresources \
-	--generate-header --header="$gen_dir/arvresources.h" \
-	--generate-source --target="$gen_dir/arvresources.c" \
+	--generate-header \
+	--target="$gen_dir/arvresources.h" \
 	arvresources.xml )
+( cd "$src_src" && glib-compile-resources \
+	--sourcedir=. \
+	--c-name arvresources \
+	--generate-source \
+	--target="$gen_dir/arvresources.c" \
+	arvresources.xml )
+for generated in arvresources.h arvresources.c; do
+	[ -s "$gen_dir/$generated" ] || { echo "error: failed to generate $generated" >&2; exit 1; }
+done
 
 # ---------------------------------------------------------------------------
 # Library sources
