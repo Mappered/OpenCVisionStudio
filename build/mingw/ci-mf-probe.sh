@@ -117,9 +117,18 @@ fi
 # ---------------------------------------------------------------------------
 echo '=== Windows 11 virtual camera via dynamic resolution ==='
 gcc -O1 -Wall -Wextra -o "$out_dir/mf-vcam-dyn.exe" "$repo_root/build/mingw/mf-vcam-dyn.c" -lole32
-"$out_dir/mf-vcam-dyn.exe" || echo "warning: dynamic virtual camera probe exited non-zero" >&2
+echo '--- module scan (no call, cannot crash) ---'
+"$out_dir/mf-vcam-dyn.exe" || echo "warning: module scan exited non-zero" >&2
 vcam_line=$("$out_dir/mf-vcam-dyn.exe" 2>/dev/null | grep '^VCAM_PROBE ' | tail -n1 || true)
-echo "probe line: ${vcam_line:-none}"
+echo "scan line: ${vcam_line:-none}"
+
+# Separate invocation for the call: if our hand-written signature is wrong this
+# can fault, and that fault is itself the finding - it must not destroy the scan
+# output above.
+echo '--- call attempt (may fault if our declaration is wrong) ---'
+"$out_dir/mf-vcam-dyn.exe" --call || echo "warning: the call attempt exited non-zero - inspect the lines above"
+call_line=$("$out_dir/mf-vcam-dyn.exe" --call 2>/dev/null | grep '^VCAM_PROBE ' | tail -n1 || true)
+echo "call line: ${call_line:-none}"
 
 # Independent check, straight off the filesystem: which system module contains
 # the export name at all? Dynamic resolution can only fail if the string is
@@ -143,11 +152,14 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 		echo ''
 		echo '```'
 		echo "${vcam_line:-VCAM_PROBE (no output)}"
+		echo "${call_line:-call attempt produced no result}"
 		echo '```'
 		echo ''
-		echo 'exported=1 with any HRESULT means the OS offers the API and our own'
-		echo 'declarations reached it. E_ACCESSDENIED is the expected answer for an'
-		echo 'unpackaged process and confirms the signature matches.'
+		echo 'A module scan line means some system module exports the API on this OS.'
+		echo 'A call line with any HRESULT means our own declarations reached it;'
+		echo 'E_ACCESSDENIED is the expected answer for an unpackaged process and'
+		echo 'confirms the signature matches. A crash or silence on the call means the'
+		echo 'declaration does not match the ABI and must be revised.'
 	} >> "$GITHUB_STEP_SUMMARY"
 fi
 

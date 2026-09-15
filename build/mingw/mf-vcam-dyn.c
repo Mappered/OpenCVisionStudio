@@ -22,6 +22,7 @@
  * here. Needed because the virtual camera API requires a COM apartment. */
 #include <objbase.h>
 #include <stdio.h>
+#include <string.h>
 
 /* Documented values. Only the software camera source type exists today. */
 typedef enum {
@@ -86,8 +87,32 @@ static const wchar_t *candidate_modules[] = {
 	L"windows.media.dll",
 };
 
-int main(void)
+/* Wide module names are converted by hand: relying on %ls inside the narrow
+ * printf is one of the things that made the first version crash before it
+ * printed a single line. */
+static void print_wide(const wchar_t *text)
 {
+	char narrow[128];
+	int written = WideCharToMultiByte(CP_UTF8, 0, text, -1, narrow, sizeof(narrow) - 1, NULL, NULL);
+	if (written <= 0)
+		narrow[0] = '\0';
+	else
+		narrow[written] = '\0';
+	fputs(narrow, stdout);
+}
+
+int main(int argc, char **argv)
+{
+	/* Unbuffered: when this probe crashes, buffered output vanishes and takes
+	 * the diagnosis with it. */
+	setvbuf(stdout, NULL, _IONBF, 0);
+
+	int do_call = 0;
+	for (int i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--call") == 0)
+			do_call = 1;
+	}
+
 	unsigned long build = 0;
 	HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
 	if (ntdll) {
@@ -109,19 +134,25 @@ int main(void)
 	for (size_t i = 0; i < sizeof(candidate_modules) / sizeof(candidate_modules[0]); i++) {
 		HMODULE module = LoadLibraryW(candidate_modules[i]);
 		if (!module) {
-			printf("  %-22ls not present on this system\n", candidate_modules[i]);
-			continue;
+		printf("  ");
+		print_wide(candidate_modules[i]);
+		printf(" not present on this system\n");
+		continue;
+	}
+	FARPROC symbol = GetProcAddress(module, "MFCreateVirtualCamera");
+	if (symbol) {
+		printf("  ");
+		print_wide(candidate_modules[i]);
+		printf(" EXPORTS MFCreateVirtualCamera at %p\n", (void *)symbol);
+		if (!create) {
+			create = (MFCreateVirtualCameraFn)(void *)symbol;
+			owner = candidate_modules[i];
 		}
-		FARPROC symbol = GetProcAddress(module, "MFCreateVirtualCamera");
-		if (symbol) {
-			printf("  %-22ls EXPORTS MFCreateVirtualCamera\n", candidate_modules[i]);
-			if (!create) {
-				create = (MFCreateVirtualCameraFn)(void *)symbol;
-				owner = candidate_modules[i];
-			}
-		} else {
-			printf("  %-22ls no such export\n", candidate_modules[i]);
-		}
+	} else {
+		printf("  ");
+		print_wide(candidate_modules[i]);
+		printf(" no such export\n");
+	}
 	}
 
 	if (!create) {
@@ -129,7 +160,16 @@ int main(void)
 		printf("VCAM_PROBE exported=0 module=none hr=0x00000000 build=%lu\n", build);
 		return 0;
 	}
-	wprintf(L"using %ls\n", owner);
+	printf("using ");
+	print_wide(owner);
+	printf("\n");
+
+	if (!do_call) {
+		printf("module scan only; pass --call to attempt MFCreateVirtualCamera\n");
+		printf("VCAM_PROBE exported=1 module=found hr=0x00000000 build=%lu\n", build);
+		return 0;
+	}
+	printf("calling MFCreateVirtualCamera (a crash here means our declaration does not match the ABI)\n");
 
 	HRESULT apartment = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	printf("CoInitializeEx: 0x%08lx\n", (unsigned long)apartment);
