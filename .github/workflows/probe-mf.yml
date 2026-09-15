@@ -1,0 +1,70 @@
+# Prove that the MinGW-w64 toolchain builds and links Media Foundation code.
+#
+# Media Foundation is normally consumed with MSVC and the Windows SDK. This
+# project is MinGW-only by decision, so before writing a webcam backend we find
+# out whether that is even possible: the probe compiles, links, initialises MF,
+# enumerates video devices, and queries the camera-control interfaces that
+# set_framegrabber_param would need.
+#
+# A CI runner has no cameras, so zero devices is a pass. The value of the run is
+# that the build and link succeed and the control-discovery code paths exist and
+# are exercised up to the point where hardware is required. A developer with a
+# webcam can build the same probe locally for the real answer.
+#
+# NO EXTERNAL ACTIONS: plain commands only, per repository policy.
+
+name: Probe Media Foundation
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      # Only the recipe ref is needed: the probe source is part of this
+      # repository, not of a vendored subtree.
+      - name: Fetch build recipe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = '${{ github.token }}'
+          $repo  = '${{ github.repository }}'
+          git init --quiet .
+          git remote add origin "https://x-access-token:$token@github.com/$repo.git"
+          git fetch --quiet --depth 1 origin '${{ github.ref_name }}'
+          git checkout --force --quiet FETCH_HEAD
+          Write-Host "recipe commit $((git rev-parse HEAD).Trim())"
+
+      - name: Locate MSYS2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($root in @("$env:RUNNER_TEMP\msys64", 'C:\msys64', 'D:\msys64')) {
+            if (Test-Path (Join-Path $root 'usr\bin\bash.exe')) {
+              Write-Host "using MSYS2 at $root"
+              "MSYS2_ROOT=$root" >> $env:GITHUB_ENV
+              exit 0
+            }
+          }
+          throw 'MSYS2 not found on this image'
+
+      - name: Build and run the probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = Join-Path $env:MSYS2_ROOT 'usr\bin\bash.exe'
+          $root = ($PWD.Path -replace '\\', '/')
+          & $bash -lc "bash '$root/build/mingw/ci-mf-probe.sh' '$root'"
+          if ($LASTEXITCODE -ne 0) { throw "probe failed with exit code $LASTEXITCODE" }
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'Media Foundation probe: MinGW build and link of MF code.'
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ''
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'Zero devices is expected on a runner. Run build/mingw/mf-probe.exe on a machine with a webcam for the real answer, including per-control ranges.'
