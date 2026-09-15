@@ -320,6 +320,7 @@ cat > "$prefix/BUILDINFO.json" <<EOF
   "built_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source_commit": "${BUILD_SOURCE_COMMIT:-${GITHUB_SHA:-unknown}}",
   "source_ref": "${BUILD_SOURCE_REF:-${GITHUB_REF_NAME:-unknown}}",
+  "subtree_tree": "$(git -C "$repo_root" rev-parse 'HEAD:aravis' 2>/dev/null || echo unknown)",
   "run_url": "${GITHUB_SERVER_URL:-}${GITHUB_REPOSITORY:+/$GITHUB_REPOSITORY}${GITHUB_RUN_ID:+/actions/runs/$GITHUB_RUN_ID}",
   "dependencies": { $(dep_versions) }
 }

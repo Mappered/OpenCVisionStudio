@@ -1,6 +1,11 @@
-# Build the vendored Aravis (GigE Vision + USB3 Vision over libusb) once, in CI,
-# and publish a redistributable package to the `artifacts` branch. Consumers then
-# download prebuilt binaries and never build Aravis at all.
+# Build the vendored Aravis (GigE Vision + USB3 Vision over libusb) and publish
+# a redistributable package to the `artifacts` branch. Consumers then download
+# prebuilt binaries and never build Aravis at all.
+#
+# NO EXTERNAL ACTIONS. This repository only allows actions from repositories
+# owned by Mappered, so every step below is a plain shell command: checkout is
+# `git`, publishing is `git`, the toolchain is MSYS2 with pacman. Do not
+# reintroduce `uses:` here - it fails the run with startup_failure.
 #
 # This file lives on the default branch (`workflows`) as a reusable workflow:
 #   - update-subtrees.yml calls it right after an aravis subtree update
@@ -8,6 +13,7 @@
 #
 # Source of truth : the `aravis/` subtree on external/Aravis
 # Build recipe    : build/mingw/build-aravis.sh - gcc only, no meson, no cmake
+# CI wrapper      : build/mingw/ci-aravis.sh - pacman deps, build, validate, zip
 # Output          : `artifacts` branch, aravis/<version>/win-x64/
 #
 # There is deliberately no `push` trigger: the subtree branch is updated by
@@ -16,8 +22,7 @@
 # mechanism that actually fires, so that is what is wired up.
 #
 # MinGW-w64 is the toolchain, so the Electron N-API addon must be built with
-# MinGW too (see docs/ROADMAP.md). Everything the script needs is a MINGW64
-# pacman package; nothing is compiled from source except Aravis itself.
+# MinGW too (see docs/ROADMAP.md).
 
 name: Build Aravis
 
@@ -52,236 +57,164 @@ env:
   PLATFORM_TAG: win-x64
 
 jobs:
-  # ---------------------------------------------------------------------------
-  build:
+  build-and-publish:
     runs-on: windows-latest
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
-      api_version: ${{ steps.meta.outputs.api_version }}
-      tree_sha: ${{ steps.meta.outputs.tree_sha }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # The aravis/ subtree lives on its own branch, not on this one, so the
-          # build checks out its source explicitly.
-          ref: ${{ inputs.source_ref }}
-          # Shallow is enough: we only need the tree object of `aravis/`.
-          fetch-depth: 1
-
-      - name: Read Aravis version and subtree identity
-        id: meta
+      # git instead of actions/checkout: the aravis source lives on its own
+      # branch, so both refs have to come down anyway.
+      - name: Fetch aravis source and build recipe
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $meson = Join-Path $PWD 'aravis\meson.build'
-          if (-not (Test-Path $meson)) { throw "aravis/meson.build not found - is this the Aravis branch?" }
-          $text = Get-Content $meson -Raw
-          if ($text -notmatch "project\s*\([^)]*version:\s*'([0-9][^']*)'") { throw 'cannot parse project version from meson.build' }
-          $version = $Matches[1]
-          if ($text -notmatch "aravis_api_version\s*=\s*'([^']+)'") { throw 'cannot parse aravis_api_version from meson.build' }
-          $api = $Matches[1]
-          # The subtree tree hash is the real identity of the vendored source: it
-          # changes when upstream content changes, not when unrelated commits land.
-          $treeSha = (git rev-parse 'HEAD:aravis').Trim()
+          $token     = '${{ github.token }}'
+          $repo      = '${{ github.repository }}'
+          $sourceRef = '${{ inputs.source_ref }}'
+          $recipeRef = '${{ github.ref_name }}'
+
+          git init --quiet .
+          git remote add origin "https://x-access-token:$token@github.com/$repo.git"
+
+          git fetch --quiet --depth 1 origin $sourceRef
+          git checkout --force --quiet FETCH_HEAD
           $sourceCommit = (git rev-parse HEAD).Trim()
-          "version=$version"  >> $env:GITHUB_OUTPUT
-          "api_version=$api"  >> $env:GITHUB_OUTPUT
-          "tree_sha=$treeSha" >> $env:GITHUB_OUTPUT
-          "source_commit=$sourceCommit" >> $env:GITHUB_OUTPUT
-          Write-Host "aravis $version (api $api), subtree tree $treeSha, source $sourceCommit"
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: MINGW64
-          install: >-
-            mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-glib2
-            mingw-w64-x86_64-libxml2
-            mingw-w64-x86_64-zlib
-            mingw-w64-x86_64-libusb
-            mingw-w64-x86_64-pkgconf
-            zip
+          # The build recipe lives on the same ref as this workflow file, which
+          # is not the ref that holds the aravis subtree.
+          git fetch --quiet --depth 1 origin $recipeRef
+          $recipeCommit = (git rev-parse FETCH_HEAD).Trim()
 
-      - name: Build with MinGW (no meson, no cmake)
-        shell: msys2 {0}
-        env:
-          # Provenance for BUILDINFO.json: the ref and commit actually built,
-          # which is the aravis branch rather than the branch this file lives on.
-          BUILD_SOURCE_COMMIT: ${{ steps.meta.outputs.source_commit }}
-          BUILD_SOURCE_REF: ${{ inputs.source_ref }}
+          $script   = git show "${recipeCommit}:build/mingw/build-aravis.sh"
+          $ciScript = git show "${recipeCommit}:build/mingw/ci-aravis.sh"
+          if (-not $script -or -not $ciScript) { throw 'build scripts not found on the recipe ref' }
+
+          New-Item -ItemType Directory -Force -Path 'build\mingw' | Out-Null
+          # Written with LF explicitly: CRLF or a BOM here breaks bash.
+          [IO.File]::WriteAllText("$PWD\build\mingw\build-aravis.sh", (($script -join "`n") + "`n"))
+          [IO.File]::WriteAllText("$PWD\build\mingw\ci-aravis.sh", (($ciScript -join "`n") + "`n"))
+
+          "BUILD_SOURCE_COMMIT=$sourceCommit" >> $env:GITHUB_ENV
+          "BUILD_SOURCE_REF=$sourceRef"       >> $env:GITHUB_ENV
+          Write-Host "aravis $sourceCommit ($sourceRef), recipe $recipeCommit ($recipeRef)"
+
+      # The windows runner image normally ships MSYS2; install it only if not.
+      - name: Locate MSYS2
+        shell: pwsh
         run: |
-          set -euo pipefail
-          bash build/mingw/build-aravis.sh "$PWD/aravis" "$PWD/staging"
-
-      # Fail loudly rather than publishing a package that is quietly incomplete.
-      - name: Validate package
-        shell: msys2 {0}
-        run: |
-          set -euo pipefail
-          fail=0
-          check() {
-            local label=$1; shift
-            local hits=()
-            for pattern in "$@"; do
-              while IFS= read -r hit; do [ -n "$hit" ] && hits+=("$hit"); done < <(compgen -G "$pattern" || true)
-            done
-            if [ "${#hits[@]}" -gt 0 ]; then
-              echo "ok   $label: ${hits[0]}"
-            else
-              echo "MISS $label"
-              fail=1
-            fi
+          $ErrorActionPreference = 'Stop'
+          foreach ($root in @("$env:RUNNER_TEMP\msys64", 'C:\msys64', 'D:\msys64')) {
+            if (Test-Path (Join-Path $root 'usr\bin\bash.exe')) {
+              Write-Host "using MSYS2 at $root"
+              "MSYS2_ROOT=$root" >> $env:GITHUB_ENV
+              exit 0
+            }
           }
-          check 'Aravis runtime DLL'    'staging/bin/libaravis-*-0.dll'
-          check 'Aravis import library' 'staging/lib/libaravis-*.dll.a'
-          check 'arv.h header'          'staging/include/aravis-*/arv.h'
-          check 'generated arvapi.h'    'staging/include/aravis-*/arvapi.h'
-          check 'generated arvfeatures.h' 'staging/include/aravis-*/arvfeatures.h'
-          check 'pkg-config file'       'staging/lib/pkgconfig/aravis-*.pc'
-          check 'arv-tool'              'staging/bin/arv-tool-*.exe'
-          check 'fake GV camera tool'   'staging/bin/arv-fake-gv-camera-*.exe'
-          check 'glib runtime DLL'      'staging/bin/libglib-2.0-0.dll'
-          check 'libusb runtime DLL'    'staging/bin/libusb-1.0.dll'
+          Write-Host 'MSYS2 not present on the image, installing it'
+          $installer = Join-Path $env:RUNNER_TEMP 'msys2-installer.exe'
+          Invoke-WebRequest -Uri 'https://github.com/msys2/msys2-installer/releases/download/nightly-x86_64/msys2-x86_64-latest.exe' -OutFile $installer
+          $root = "$env:RUNNER_TEMP\msys64"
+          Start-Process -FilePath $installer -Wait -ArgumentList @(
+            'in', '--confirm-command', '--accept-messages', '--root', ($root -replace '\\', '/')
+          )
+          if (-not (Test-Path (Join-Path $root 'usr\bin\bash.exe'))) { throw 'MSYS2 installation failed' }
+          "MSYS2_ROOT=$root" >> $env:GITHUB_ENV
 
-          # Every non-system dependency of the DLL must have been copied next to
-          # it - otherwise the package only works on machines with MSYS2 installed.
-          command -v ldd >/dev/null 2>&1 || echo 'warning: ldd unavailable, skipping closure check'
-          echo '--- runtime dependency closure ---'
-          while IFS= read -r dep; do
-            [ -n "$dep" ] || continue
-            if [ -f "staging/bin/$dep" ]; then
-              echo "ok   dep: $dep"
-            else
-              echo "MISS dep (not copied): $dep"
-              fail=1
-            fi
-          done < <(ldd staging/bin/libaravis-*-0.dll \
-                     | awk '{print $1}' \
-                     | grep -E '^(libglib|libgobject|libgio|libgmodule|libxml2|libusb|libintl|libpcre2|libffi|libiconv|libz|zlib|libwinpthread|libgcc)' \
-                     | sort -u || true)
-
-          [ "$fail" -eq 0 ] || { echo 'package is incomplete'; exit 1; }
-
-      - name: Package
-        shell: msys2 {0}
+      # pacman, gcc, validation and zipping all happen inside this one call into
+      # MSYS2 bash; see build/mingw/ci-aravis.sh.
+      - name: Build, validate and package
+        shell: pwsh
         run: |
-          set -euo pipefail
-          name="aravis-${{ steps.meta.outputs.version }}-${PLATFORM_TAG}"
-          mkdir -p dist
-          ( cd staging && zip -q -r "../dist/$name.zip" . )
-          cp staging/BUILDINFO.json dist/
-          ( cd dist && sha256sum "$name.zip" > SHA256SUMS )
-          ls -l dist
-          cat dist/SHA256SUMS
-          cat dist/BUILDINFO.json
+          $ErrorActionPreference = 'Stop'
+          $bash = Join-Path $env:MSYS2_ROOT 'usr\bin\bash.exe'
+          $root = ($PWD.Path -replace '\\', '/')
+          & $bash -lc "bash '$root/build/mingw/ci-aravis.sh' '$root/aravis' '$root' '$root/staging' '$root/dist'"
+          if ($LASTEXITCODE -ne 0) { throw "build failed with exit code $LASTEXITCODE" }
+          Get-ChildItem dist | Select-Object Name, Length
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: aravis-${{ env.PLATFORM_TAG }}
-          if-no-files-found: error
-          path: dist
-
-  # ---------------------------------------------------------------------------
-  # Publishes to the `artifacts` branch: one immutable directory per
-  # version/platform, plus a generated README and manifest that develop/main can
-  # read to discover what is available.
-  publish:
-    needs: build
-    # A manual dispatch publishes by default; a workflow_call only when the
-    # caller asked for it (update-subtrees.yml passes publish: true).
-    if: ${{ inputs.publish == true }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: aravis-${{ env.PLATFORM_TAG }}
-          path: incoming
-
-      - uses: actions/checkout@v4
-        with:
-          ref: artifacts
-          path: artifacts-repo
-
-      - name: Stage package on the artifacts branch
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
+      - name: Publish to the artifacts branch
+        if: ${{ inputs.publish == true }}
+        shell: pwsh
         run: |
-          set -euo pipefail
-          dest="artifacts-repo/aravis/${VERSION}/${{ env.PLATFORM_TAG }}"
-          mkdir -p "$dest"
-          cp incoming/*.zip "$dest/"
-          cp incoming/SHA256SUMS "$dest/"
-          cp incoming/BUILDINFO.json "$dest/"
-          find artifacts-repo -type f | sort
+          $ErrorActionPreference = 'Stop'
+          $info  = Get-Content 'dist\BUILDINFO.json' -Raw | ConvertFrom-Json
+          $token = '${{ github.token }}'
+          $repo  = '${{ github.repository }}'
+          $dest  = "aravis/$($info.version)/$($info.platform)"
 
-      - name: Regenerate index and manifest
+          $checkout = Join-Path $env:RUNNER_TEMP 'artifacts-repo'
+          if (Test-Path $checkout) { Remove-Item -LiteralPath $checkout -Recurse -Force }
+          git clone --quiet --branch artifacts "https://x-access-token:$token@github.com/$repo.git" $checkout
+
+          $target = Join-Path $checkout ($dest -replace '/', '\')
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          Copy-Item 'dist\*' $target -Force
+
+          # Regenerate manifest.json and README.md from whatever packages exist.
+          $packages = @()
+          foreach ($file in Get-ChildItem -Path (Join-Path $checkout 'aravis') -Recurse -Filter 'BUILDINFO.json' -ErrorAction SilentlyContinue) {
+            $pkg = Get-Content $file.FullName -Raw | ConvertFrom-Json
+            $rel = $file.Directory.FullName.Substring($checkout.Length + 1) -replace '\\', '/'
+            $packages += [pscustomobject]@{
+              package = $pkg.package; version = $pkg.version; platform = $pkg.platform
+              toolchain = $pkg.toolchain; built_utc = $pkg.built_utc
+              subtree_tree = $pkg.subtree_tree; source_commit = $pkg.source_commit
+              source_ref = $pkg.source_ref; path = $rel; dependencies = $pkg.dependencies
+            }
+          }
+          $packages = @($packages | Sort-Object package, version, platform)
+          [IO.File]::WriteAllText((Join-Path $checkout 'manifest.json'), (($packages | ConvertTo-Json -Depth 6) + "`n"))
+
+          $rows = @()
+          foreach ($p in $packages) { $rows += "| $($p.package) | $($p.version) | $($p.platform) | $($p.toolchain) | $($p.built_utc) |" }
+          $readme = @(
+            '# Build artifacts',
+            '',
+            'Prebuilt dependencies produced by CI. Consumers download these so they',
+            'need neither meson nor a GLib build of their own.',
+            '',
+            '| Package | Version | Platform | Toolchain | Built (UTC) |',
+            '|---|---|---|---|---|'
+          ) + $rows + @(
+            '',
+            '## How to consume',
+            '',
+            '```sh',
+            'git fetch origin artifacts',
+            'git show origin/artifacts:manifest.json',
+            'git archive --remote=origin artifacts aravis/<version>/win-x64 | tar -x',
+            '```',
+            '',
+            'Pin the commit of this branch, not the branch name, for a reproducible',
+            'build. Each BUILDINFO.json records the toolchain, the subtree tree hash',
+            'and the dependency versions the package was built from.',
+            ''
+          )
+          [IO.File]::WriteAllText((Join-Path $checkout 'README.md'), ($readme -join "`n"))
+
+          Push-Location $checkout
+          try {
+            git config user.name  'GitHub Actions'
+            git config user.email 'actions@github.com'
+            git add -A
+            git diff --cached --quiet
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host 'artifacts branch already up to date'
+            } else {
+              $tree = "$($info.subtree_tree)"
+              $sha = $tree.Substring(0, [Math]::Min(12, $tree.Length))
+              git commit --quiet -m "aravis $($info.version) win-x64 (subtree $sha)"
+              git push --quiet origin HEAD:artifacts
+              Write-Host "published aravis $($info.version) to $dest"
+            }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Summary
+        shell: pwsh
         run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, pathlib
-
-          root = pathlib.Path('artifacts-repo')
-          packages = []
-          for info in sorted(root.glob('aravis/*/*/BUILDINFO.json')):
-              data = json.loads(info.read_text(encoding='utf-8-sig'))
-              data['path'] = str(info.parent.relative_to(root)).replace('\\', '/')
-              packages.append(data)
-
-          (root / 'manifest.json').write_text(
-              json.dumps({'packages': packages}, indent=2) + '\n', encoding='utf-8')
-
-          lines = [
-              '# Build artifacts',
-              '',
-              'Prebuilt dependencies produced by CI. These are consumed by the',
-              'develop/main pipelines so those branches need neither meson nor a',
-              'GLib build of their own.',
-              '',
-              '| Package | Version | Platform | Toolchain | Built (UTC) | Deps |',
-              '|---|---|---|---|---|---|',
-          ]
-          for p in packages:
-              deps = ', '.join(f'{k} {v}' for k, v in sorted(p.get('dependencies', {}).items()))
-              lines.append('| {pkg} | {ver} | {plat} | {tool} | {ts} | {deps} |'.format(
-                  pkg=p['package'], ver=p['version'], plat=p['platform'],
-                  tool=p.get('toolchain', ''), ts=p.get('built_utc', ''), deps=deps or '-'))
-          lines += [
-              '',
-              '## How to consume',
-              '',
-              '```sh',
-              '# fetch without checking out the branch',
-              'git fetch origin artifacts',
-              '',
-              '# list what is available',
-              'git show origin/artifacts:manifest.json',
-              '',
-              '# extract one package (example: aravis 0.9.3, win-x64)',
-              'git archive --remote=origin artifacts aravis/0.9.3/win-x64 | tar -x',
-              '```',
-              '',
-              'Pin the *commit* of this branch, not the branch name, if you need a',
-              'reproducible build; the manifest and each BUILDINFO.json record the',
-              'toolchain and dependency versions the package was built from.',
-              '',
-          ]
-          (root / 'README.md').write_text('\n'.join(lines), encoding='utf-8')
-          PY
-          cat artifacts-repo/manifest.json
-
-      - name: Commit and push
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-          TREE_SHA: ${{ needs.build.outputs.tree_sha }}
-        run: |
-          set -euo pipefail
-          cd artifacts-repo
-          git config user.name  "GitHub Actions"
-          git config user.email "actions@github.com"
-          git add -A
-          if git diff --cached --quiet; then
-            echo "artifacts branch already up to date"
-            exit 0
-          fi
-          git commit -m "aravis ${VERSION} win-x64 (subtree ${TREE_SHA:0:12})"
-          git push origin HEAD:artifacts
+          $info = Get-Content 'dist\BUILDINFO.json' -Raw | ConvertFrom-Json
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Aravis $($info.version) (api $($info.api_version)), platform $($info.platform)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ''
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Toolchain: $($info.toolchain)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Subtree tree: $($info.subtree_tree)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Source commit: $($info.source_commit) ($($info.source_ref))"
