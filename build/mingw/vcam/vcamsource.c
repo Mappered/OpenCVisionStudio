@@ -27,6 +27,7 @@
 #include <mfidl.h>
 #include <mfobjects.h>
 #include <mferror.h>
+#include <ksmedia.h>   /* PINNAME_VIDEO_CAPTURE, the capture pin category */
 #include <stdio.h>
 #include <string.h>
 
@@ -582,7 +583,25 @@ static HRESULT source_build_presentation(VcamSource *self)
 	if (SUCCEEDED(hr))
 		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
 	if (SUCCEEDED(hr))
+		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_ALL_SAMPLES_INDEPENDENT, TRUE);
+	if (SUCCEEDED(hr))
+		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_FIXED_SIZE_SAMPLES, TRUE);
+	if (SUCCEEDED(hr))
+		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_DEFAULT_STRIDE, VCAM_FRAME_WIDTH * 4);
+	if (SUCCEEDED(hr))
+		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_SAMPLE_SIZE, VCAM_FRAME_BYTES);
+	if (SUCCEEDED(hr))
 		hr = MFCreateStreamDescriptor(0, 1, &media_type, &self->stream_descriptor);
+	if (SUCCEEDED(hr)) {
+		/* The frame server classifies a stream by these. Without the capture
+		 * pin category it does not treat the source as a camera at all, which
+		 * is why it refused the source before ever calling Start on it. */
+		IMFAttributes *stream_attributes = (IMFAttributes *)self->stream_descriptor;
+		IMFAttributes_SetGUID(stream_attributes, &MF_DEVICESTREAM_STREAM_CATEGORY, &PINNAME_VIDEO_CAPTURE);
+		IMFAttributes_SetUINT32(stream_attributes, &MF_DEVICESTREAM_STREAM_ID, 0);
+		IMFAttributes_SetUINT32(stream_attributes, &MF_DEVICESTREAM_FRAMESERVER_SHARED, 1);
+		IMFAttributes_SetUINT32(stream_attributes, &MF_DEVICESTREAM_ATTRIBUTE_FRAMESOURCE_TYPES, 1);
+	}
 	if (SUCCEEDED(hr))
 		hr = IMFStreamDescriptor_GetMediaTypeHandler(self->stream_descriptor, &handler);
 	if (SUCCEEDED(hr))
@@ -610,10 +629,11 @@ static HRESULT STDMETHODCALLTYPE source_create_presentation_descriptor(void *Thi
 	hr = source_build_presentation(self);
 	if (FAILED(hr))
 		return hr;
-	*descriptor = self->descriptor;
-	IMFPresentationDescriptor_AddRef(*descriptor);
-	vcam_log("source CreatePresentationDescriptor -> ok (%dx%d RGB32)", VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
-	return S_OK;
+	/* Hand out a copy: callers are allowed to modify the descriptor they get. */
+	hr = IMFPresentationDescriptor_Clone(self->descriptor, descriptor);
+	vcam_log("source CreatePresentationDescriptor -> 0x%08lx (%dx%d RGB32)", (unsigned long)hr,
+	         VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
+	return hr;
 }
 
 static HRESULT source_create_stream(VcamSource *self)
@@ -702,20 +722,12 @@ static HRESULT STDMETHODCALLTYPE source_stop(void *This)
 static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 {
 	VcamSource *self = (VcamSource *)This;
-	EventPlumbing p;
 	vcam_log("source Pause (state=%lu)", (unsigned long)self->state);
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
-	if (self->state != 2)
-		return MF_E_INVALIDREQUEST;
-	self->state = 3;
-	p.queue = self->queue;
-	p.state = &self->state;
-	if (self->stream) {
-		self->stream->state = 3;
-		plumbing_queue_param_var(&p, MEStreamPaused, kNullGuid, S_OK, NULL);
-	}
-	return plumbing_queue_param_var(&p, MESourcePaused, kNullGuid, S_OK, NULL);
+	/* A live source cannot be paused, and the documented way to say so is a
+	 * state-transition error rather than "invalid request". */
+	return MF_E_INVALID_STATE_TRANSITION;
 }
 
 static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
@@ -764,14 +776,20 @@ static HRESULT STDMETHODCALLTYPE source_get_stream_attributes(void *This, DWORD 
 	if (!attributes)
 		return E_POINTER;
 	*attributes = NULL;
-	if (!self->stream_attributes)
-		hr = MFCreateAttributes(&self->stream_attributes, 1);
-	if (SUCCEEDED(hr)) {
-		*attributes = self->stream_attributes;
-		IMFAttributes_AddRef(*attributes);
+	if (self->state == 4)
+		return MF_E_SHUTDOWN;
+	hr = source_build_presentation(self);
+	if (FAILED(hr))
+		return hr;
+	if (stream_identifier != 0) {
+		vcam_log("source GetStreamAttributes(%lu): unknown stream", (unsigned long)stream_identifier);
+		return MF_E_INVALIDSTREAMNUMBER;
 	}
-	vcam_log("source GetStreamAttributes(stream=%lu) -> 0x%08lx", (unsigned long)stream_identifier,
-	         (unsigned long)hr);
+	/* The stream descriptor is itself an IMFAttributes and carries the capture
+	 * pin category and frame-source type the frame server looks for. */
+	*attributes = (IMFAttributes *)self->stream_descriptor;
+	IMFAttributes_AddRef(*attributes);
+	vcam_log("source GetStreamAttributes(stream=0) -> 0x%08lx", (unsigned long)hr);
 	return hr;
 }
 
@@ -826,6 +844,22 @@ static HRESULT vcam_source_create(IUnknown *outer, REFIID riid, void **out)
 	hr = source_query_interface(self, riid, out);
 	source_release(self);
 	return hr;
+}
+
+/* The frame server may set attributes on the activator before calling
+ * ActivateObject, and expects the source to expose them again through
+ * GetSourceAttributes. Copying them across is what makes the two objects agree
+ * about the device. */
+static void source_copy_activation_attributes(VcamSource *self, IMFAttributes *activation)
+{
+	if (!self->source_attributes) {
+		if (FAILED(MFCreateAttributes(&self->source_attributes, 4)))
+			return;
+	}
+	if (activation)
+		IMFAttributes_CopyAllItems(activation, self->source_attributes);
+	IMFAttributes_SetString(self->source_attributes, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, VCAM_FRIENDLY_NAME);
+	vcam_log("source activation attributes copied");
 }
 
 /* ------------------------------------------------------------------ */
@@ -947,6 +981,7 @@ static HRESULT STDMETHODCALLTYPE activator_activate_object(void *This, REFIID ri
 		}
 		/* vcam_source_create hands back an IUnknown; same object. */
 		self->source = (VcamSource *)unknown;
+		source_copy_activation_attributes(self->source, self->attributes);
 	}
 
 	hr = source_query_interface(self->source, riid, ppv);
