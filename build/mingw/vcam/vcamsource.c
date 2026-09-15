@@ -39,8 +39,10 @@ static const CLSID CLSID_VcamMediaSource = {
 };
 
 /* The event queues want a "no extended type" GUID. GUID_NULL is not visible in
- * this toolchain's headers, and an all-zero GUID is what it means. */
-static const GUID kNullGuid = { 0, 0, 0, { 0, 0, 0, 0, 0, 0, 0, 0 } };
+ * this toolchain's headers, and an all-zero GUID is what it means. Exposed as a
+ * pointer because every use site passes it as REFGUID. */
+static const GUID kNullGuidValue = { 0, 0, 0, { 0, 0, 0, 0, 0, 0, 0, 0 } };
+#define kNullGuid (&kNullGuidValue)
 
 static HMODULE g_module = NULL;
 static LONG g_object_count = 0;
