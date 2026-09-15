@@ -322,6 +322,23 @@ fi
 # ---------------------------------------------------------------------------
 # BUILDINFO.json
 # ---------------------------------------------------------------------------
+# We redistribute glib, libxml2, libusb and zlib DLLs, so their licence texts
+# ship with them. MSYS2 keeps them in /mingw64/share/licenses/<package>/.
+echo '=== licenses ==='
+licenses_dir="$prefix/licenses"
+mkdir -p "$licenses_dir"
+cp -f "$src_dir/COPYING" "$licenses_dir/aravis.txt" 2>/dev/null || echo 'warning: aravis COPYING not found' >&2
+for pkg in glib2 libxml2 libusb zlib libpcre2 libffi libiconv gettext-runtime winpthreads gcc-libs; do
+	found=0
+	for f in /mingw64/share/licenses/"$pkg"/*; do
+		[ -f "$f" ] || continue
+		cp -f "$f" "$licenses_dir/$pkg-$(basename "$f")"
+		found=1
+	done
+	[ "$found" -eq 1 ] || echo "warning: no licence text found for $pkg" >&2
+done
+ls "$licenses_dir" | head -n 20
+
 dep_versions() {
 	local out=""
 	for p in glib-2.0 libxml-2.0 libusb-1.0 zlib; do
