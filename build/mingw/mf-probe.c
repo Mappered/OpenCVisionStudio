@@ -15,6 +15,12 @@
  * C++ runtime into a MinGW-built native addon.
  */
 
+/* COBJMACROS gives the IFoo_Method(This, ...) convenience macros for C, which
+ * is how COM is called from C without C++ helpers. INITGUID instantiates the
+ * interface and attribute GUIDs in this translation unit, so the probe does not
+ * depend on a separate GUID library. Both must precede the headers. */
+#define COBJMACROS
+#define INITGUID
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -27,6 +33,7 @@
 #include <mfidl.h>
 #include <mfobjects.h>
 #include <mfreadwrite.h>
+#include <mferror.h>
 
 #include <stdio.h>
 

@@ -38,7 +38,7 @@ done
 [ "$found" -ge 5 ] || { echo 'Media Foundation headers are not available in this MinGW toolchain' >&2; exit 1; }
 
 echo "=== which import libraries are present? ==="
-for library in libmfplat.a libmfreadwrite.a libmfuuid.a libole32.a liboleaut32.a libuuid.a; do
+for library in libmfplat.a libmfreadwrite.a libmfuuid.a libole32.a liboleaut32.a libuuid.a libstrmiids.a; do
 	if [ -f "/mingw64/lib/$library" ] || [ -f "/mingw64/lib/$library.dll.a" ]; then
 		echo "ok   $library"
 	else
@@ -49,7 +49,7 @@ done
 echo '=== build ==='
 mkdir -p "$out_dir"
 gcc -O1 -Wall -Wextra -o "$out_dir/mf-probe.exe" "$source_file" \
-	-lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid
+	-lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid -lstrmiids
 echo "linked $out_dir/mf-probe.exe"
 
 echo '=== run (a runner has no cameras; zero devices is success) ==='
