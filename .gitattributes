@@ -1,0 +1,5 @@
+# Shell scripts are executed by MSYS2 bash in CI; CRLF breaks the shebang.
+# Scoped to our own files on purpose: the branches carrying the aravis/ subtree
+# also carry upstream's scripts, and a blanket rule would renormalise them.
+build/**/*.sh text eol=lf
+.github/workflows/*.yml text eol=lf
