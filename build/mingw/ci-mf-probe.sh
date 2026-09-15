@@ -168,6 +168,54 @@ fi
 # the gate between holding an object and applications being able to see a
 # webcam, and it needs no camera and no GUI.
 # ---------------------------------------------------------------------------
+vcam_dir="$repo_root/build/mingw/vcam"
+
+echo '=== building the virtual camera media source ==='
+gcc -O1 -Wall -Wextra -shared -o "$out_dir/vcamsource.dll" "$vcam_dir/vcamsource.c" \
+	-Wl,--out-implib,"$out_dir/libvcamsource.dll.a" \
+	-lmf -lmfplat -lmfuuid -lole32 -loleaut32 -luuid -lstrmiids -static-libgcc
+echo "built $out_dir/vcamsource.dll"
+
+# The frame server loads this DLL; anything it depends on that is not a Windows
+# system library has to travel with it.
+echo '--- non-system dependencies of the media source ---'
+if command -v ldd >/dev/null 2>&1; then
+	non_system=$(ldd "$out_dir/vcamsource.dll" | awk '{print $1" -> "$3}' | grep -vi 'system32\|/windows/' || true)
+	echo "${non_system:-none}"
+fi
+
+echo '=== registering the media source CLSID ==='
+gcc -O1 -Wall -Wextra -o "$out_dir/vcam-register.exe" "$vcam_dir/vcam_register.c" -lole32 -luuid -ladvapi32
+"$out_dir/vcam-register.exe" register "$out_dir/vcamsource.dll" 2>&1 | tee "$out_dir/vcam-register.log" || true
+register_line=$(grep '^VCAM_REGISTER ' "$out_dir/vcam-register.log" | tail -n1 || true)
+echo "register line: ${register_line:-none}"
+
+echo '=== virtual camera end to end (publish, enumerate, read a frame) ==='
+gcc -O1 -Wall -Wextra -o "$out_dir/vcam-read.exe" "$vcam_dir/vcam_read_probe.c" \
+	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid
+"$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read.log" || true
+read_line=$(grep '^VCAM_READ ' "$out_dir/vcam-read.log" | tail -n1 || true)
+echo "read line: ${read_line:-none}"
+
+echo '=== unregistering (leave the runner clean) ==='
+"$out_dir/vcam-register.exe" unregister || true
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+	{
+		echo ''
+		echo '### Virtual camera end to end'
+		echo ''
+		echo '```'
+		echo "${register_line:-VCAM_REGISTER (no output)}"
+		echo "${read_line:-VCAM_READ (no output)}"
+		echo '```'
+		echo ''
+		echo 'found=1 means the camera was enumerated by Media Foundation, and'
+		echo 'sample_bytes>0 means a frame was delivered through the frame server to'
+		echo 'this reader. Both together are the end-to-end proof.'
+	} >> "$GITHUB_STEP_SUMMARY"
+fi
+
 echo '=== virtual camera publish probe ==='
 gcc -O1 -Wall -Wextra -o "$out_dir/vcam-publish.exe" \
 	"$repo_root/build/mingw/vcam/vcam_publish_probe.c" \
