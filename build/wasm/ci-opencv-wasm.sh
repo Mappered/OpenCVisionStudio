@@ -69,10 +69,20 @@ mkdir -p "$build_dir" "$staging" "$dist"
 
 build_args=(--build_wasm --disable_single_file --config "$opencv_dir/platforms/js/opencv_js.config.py")
 [ "$simd" = "true" ] && build_args+=(--simd)
+# The js bindings module must be in BUILD_LIST. build_js.py sets
+# -DBUILD_opencv_js=ON, but an explicit BUILD_LIST that omits it drops the
+# module, and with it the opencv.js target - which then fails late as
+# "No rule to make target 'opencv.js'". Modules listed here are the ones
+# compiled; the whitelist config decides which functions get bound.
+build_list="$modules"
+case ",$build_list," in
+	*,js,*) ;;
+	*) build_list="$build_list,js" ;;
+esac
 # -DCMAKE_CXX_STANDARD=17 is required, not cosmetic: recent emscripten needs
 # C++17 for Embind and OpenCV still defaults to C++11, which aborts the
 # configure step with an explicit error.
-for option in "-DBUILD_LIST=$modules" -DCMAKE_CXX_STANDARD=17 \
+for option in "-DBUILD_LIST=$build_list" -DCMAKE_CXX_STANDARD=17 \
 	-DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF; do
 	build_args+=(--cmake_option="$option")
 done
