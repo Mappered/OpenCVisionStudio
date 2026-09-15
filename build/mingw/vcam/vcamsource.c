@@ -331,7 +331,9 @@ static HRESULT STDMETHODCALLTYPE stream_get_event(void *This, DWORD flags, IMFMe
 {
 	VcamStream *self = (VcamStream *)This;
 	EventPlumbing p = { self->queue, &self->state };
-	return plumbing_get_event(&p, flags, event);
+	HRESULT hr = plumbing_get_event(&p, flags, event);
+	vcam_log("stream GetEvent -> 0x%08lx", (unsigned long)hr);
+	return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE stream_begin_get_event(void *This, IMFAsyncCallback *callback, IUnknown *state)
@@ -532,7 +534,9 @@ static HRESULT STDMETHODCALLTYPE source_get_event(void *This, DWORD flags, IMFMe
 {
 	VcamSource *self = (VcamSource *)This;
 	EventPlumbing p = { self->queue, &self->state };
-	return plumbing_get_event(&p, flags, event);
+	HRESULT hr = plumbing_get_event(&p, flags, event);
+	vcam_log("source GetEvent -> 0x%08lx", (unsigned long)hr);
+	return hr;
 }
 
 static HRESULT STDMETHODCALLTYPE source_begin_get_event(void *This, IMFAsyncCallback *callback, IUnknown *state)
@@ -754,6 +758,7 @@ static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 	 * IMFVirtualCamera::Start - the error Start returned matched this function's
 	 * return code in two consecutive runs. A live source has nothing to pause,
 	 * so succeeding is both truthful and what the server requires here. */
+	vcam_log("source Pause -> S_OK");
 	return S_OK;
 }
 
@@ -769,6 +774,7 @@ static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
 	}
 	if (self->queue)
 		IMFMediaEventQueue_Shutdown(self->queue);
+	vcam_log("source Shutdown -> S_OK");
 	return S_OK;
 }
 
