@@ -81,9 +81,13 @@ devel_pkgs="glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 libxml-2.0 libusb-1.0 zlib"
 read -r -a dep_cflags <<<"$(pkg-config --cflags $devel_pkgs)"
 read -r -a dep_libs   <<<"$(pkg-config --libs   $devel_pkgs)"
 
-# Mirrors meson's GCC branch of cc_export_define for a shared build, plus
-# -fvisibility=hidden so only the public API is exported.
-arv_api='extern __attribute__ ((visibility ("default")))'
+# Export strategy, and why it is not meson's: meson's GCC branch uses
+# -fvisibility=hidden plus a visibility("default") attribute on ARV_API. On PE
+# that attribute is not honoured, so the DLL ends up exporting nothing and the
+# import library comes out empty - arv-tool then fails to link every symbol.
+# MinGW auto-export is the reliable equivalent: plain declarations for
+# consumers, every symbol in the object files exported by the linker.
+arv_api='extern'
 
 cflags=(
 	# Pinned deliberately: recent GCC defaults to C23, where implicit function
@@ -94,7 +98,6 @@ cflags=(
 	-DNDEBUG
 	-DARAVIS_COMPILATION
 	-D_WIN32_WINNT=0x0601
-	-fvisibility=hidden
 	-I"$gen_dir"
 	-I"$src_src"
 	"${dep_cflags[@]}"
@@ -253,6 +256,7 @@ dll="$prefix/bin/libaravis-$api-0.dll"
 implib="$prefix/lib/libaravis-$api.dll.a"
 
 gcc -shared -o "$dll" "${objects[@]}" \
+	-Wl,--export-all-symbols \
 	-Wl,--out-implib,"$implib" \
 	"${dep_libs[@]}" "${system_libs[@]}"
 
