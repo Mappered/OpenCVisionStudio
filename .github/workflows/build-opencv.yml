@@ -1,38 +1,34 @@
-# Build the vendored Aravis (GigE Vision + USB3 Vision over libusb) and publish
-# a redistributable package to the `artifacts` branch. Consumers then download
-# prebuilt binaries and never build Aravis at all.
+# Build the vendored OpenCV (core, then imgproc/imgcodecs) and publish a
+# redistributable package to the `artifacts` branch, so consumers download
+# prebuilt binaries instead of building OpenCV themselves.
 #
 # NO EXTERNAL ACTIONS. This repository only allows actions from repositories
-# owned by Mappered, so every step below is a plain shell command: checkout is
-# `git`, publishing is `git`, the toolchain is MSYS2 with pacman. Do not
-# reintroduce `uses:` here - it fails the run with startup_failure.
+# owned by Mappered, so every step is a plain shell command: checkout is `git`,
+# publishing is `git`, and the toolchain and build system come from MSYS2.
 #
-# This file lives on the default branch (`workflows`) as a reusable workflow:
-#   - update-subtrees.yml calls it right after an aravis subtree update
-#   - or dispatch it by hand against any ref (default external/Aravis)
+# CMake appears inside the CI job only, installed by pacman with the rest of the
+# toolchain. That is deliberate and agreed: OpenCV's build is a 10k line CMake
+# system with CPU dispatch and codec detection, and reproducing it by hand would
+# be both weeks of work and a permanent source of silently-slower libraries.
+# No developer machine needs cmake.
 #
-# Source of truth : the `aravis/` subtree on external/Aravis
-# Build recipe    : build/mingw/build-aravis.sh - gcc only, no meson, no cmake
-# CI wrapper      : build/mingw/ci-aravis.sh - pacman deps, build, validate, zip
-# Output          : `artifacts` branch, aravis/<version>/win-x64/
-#
-# There is deliberately no `push` trigger: the subtree branch is updated by
-# update-subtrees.yml pushing with GITHUB_TOKEN, and GitHub does not start
-# workflow runs for events caused by that token. workflow_call is the only
-# mechanism that actually fires, so that is what is wired up.
-#
-# MinGW-w64 is the toolchain, so the Electron N-API addon must be built with
-# MinGW too (see docs/ROADMAP.md).
+# Source of truth : the `opencv/` subtree on external/OpenCV
+# Build recipe    : build/mingw/ci-opencv.sh - pacman, cmake, ninja, gcc, package
+# Output          : `artifacts` branch, opencv/<version>/win-x64/
 
-name: Build Aravis
+name: Build OpenCV
 
 on:
   workflow_dispatch:
     inputs:
       source_ref:
-        description: Branch or tag carrying the aravis/ subtree
+        description: Branch or tag carrying the opencv/ subtree
         type: string
-        default: external/Aravis
+        default: external/OpenCV
+      modules:
+        description: Comma separated module list for BUILD_LIST
+        type: string
+        default: core
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -40,10 +36,15 @@ on:
   workflow_call:
     inputs:
       source_ref:
-        description: Branch or tag carrying the aravis/ subtree
+        description: Branch or tag carrying the opencv/ subtree
         type: string
         required: false
-        default: external/Aravis
+        default: external/OpenCV
+      modules:
+        description: Comma separated module list for BUILD_LIST
+        type: string
+        required: false
+        default: core
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -59,10 +60,11 @@ env:
 jobs:
   build-and-publish:
     runs-on: windows-latest
+    # OpenCV takes a while; raise the ceiling from the 6 hour default is not
+    # needed, but a stuck run should not burn an hour either.
+    timeout-minutes: 180
     steps:
-      # git instead of actions/checkout: the aravis source lives on its own
-      # branch, so both refs have to come down anyway.
-      - name: Fetch aravis source and build recipe
+      - name: Fetch opencv source and build recipe
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -77,30 +79,24 @@ jobs:
           git fetch --quiet --depth 1 origin $sourceRef
           git checkout --force --quiet FETCH_HEAD
           $sourceCommit = (git rev-parse HEAD).Trim()
-          # Computed here rather than in the shell script: git is not part of the
-          # MSYS2 environment, so asking for this from bash yields nothing.
-          $subtreeTree = (git rev-parse 'HEAD:aravis').Trim()
+          $subtreeTree  = (git rev-parse 'HEAD:opencv').Trim()
 
           # The build recipe lives on the same ref as this workflow file, which
-          # is not the ref that holds the aravis subtree.
+          # is not the ref holding the opencv subtree.
           git fetch --quiet --depth 1 origin $recipeRef
           $recipeCommit = (git rev-parse FETCH_HEAD).Trim()
 
-          $script   = git show "${recipeCommit}:build/mingw/build-aravis.sh"
-          $ciScript = git show "${recipeCommit}:build/mingw/ci-aravis.sh"
-          if (-not $script -or -not $ciScript) { throw 'build scripts not found on the recipe ref' }
+          $ciScript = git show "${recipeCommit}:build/mingw/ci-opencv.sh"
+          if (-not $ciScript) { throw 'build/mingw/ci-opencv.sh not found on the recipe ref' }
 
           New-Item -ItemType Directory -Force -Path 'build\mingw' | Out-Null
-          # Written with LF explicitly: CRLF or a BOM here breaks bash.
-          [IO.File]::WriteAllText("$PWD\build\mingw\build-aravis.sh", (($script -join "`n") + "`n"))
-          [IO.File]::WriteAllText("$PWD\build\mingw\ci-aravis.sh", (($ciScript -join "`n") + "`n"))
+          [IO.File]::WriteAllText("$PWD\build\mingw\ci-opencv.sh", (($ciScript -join "`n") + "`n"))
 
           "BUILD_SOURCE_COMMIT=$sourceCommit" >> $env:GITHUB_ENV
           "BUILD_SOURCE_REF=$sourceRef"       >> $env:GITHUB_ENV
           "BUILD_SUBTREE_TREE=$subtreeTree"   >> $env:GITHUB_ENV
-          Write-Host "aravis $sourceCommit ($sourceRef) subtree $subtreeTree, recipe $recipeCommit ($recipeRef)"
+          Write-Host "opencv $sourceCommit ($sourceRef) subtree $subtreeTree, recipe $recipeCommit ($recipeRef)"
 
-      # The windows runner image normally ships MSYS2; install it only if not.
       - name: Locate MSYS2
         shell: pwsh
         run: |
@@ -122,15 +118,13 @@ jobs:
           if (-not (Test-Path (Join-Path $root 'usr\bin\bash.exe'))) { throw 'MSYS2 installation failed' }
           "MSYS2_ROOT=$root" >> $env:GITHUB_ENV
 
-      # pacman, gcc, validation and zipping all happen inside this one call into
-      # MSYS2 bash; see build/mingw/ci-aravis.sh.
       - name: Build, validate and package
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $bash = Join-Path $env:MSYS2_ROOT 'usr\bin\bash.exe'
           $root = ($PWD.Path -replace '\\', '/')
-          & $bash -lc "bash '$root/build/mingw/ci-aravis.sh' '$root/aravis' '$root' '$root/staging' '$root/dist'"
+          & $bash -lc "bash '$root/build/mingw/ci-opencv.sh' '$root/opencv' '$root' '$root/staging' '$root/dist' '${{ inputs.modules }}'"
           if ($LASTEXITCODE -ne 0) { throw "build failed with exit code $LASTEXITCODE" }
           Get-ChildItem dist | Select-Object Name, Length
 
@@ -142,7 +136,7 @@ jobs:
           $info  = Get-Content 'dist\BUILDINFO.json' -Raw | ConvertFrom-Json
           $token = '${{ github.token }}'
           $repo  = '${{ github.repository }}'
-          $dest  = "aravis/$($info.version)/$($info.platform)"
+          $dest  = "$($info.package)/$($info.version)/$($info.platform)"
 
           $checkout = Join-Path $env:RUNNER_TEMP 'artifacts-repo'
           if (Test-Path $checkout) { Remove-Item -LiteralPath $checkout -Recurse -Force }
@@ -152,10 +146,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $target | Out-Null
           Copy-Item 'dist\*' $target -Force
 
-          # Regenerate manifest.json and README.md from whatever packages exist.
+          # Regenerate manifest.json and README.md from every package on the
+          # branch - <package>/<version>/<platform> - so one package's build
+          # never drops another's entry.
           $packages = @()
-          # Scan every package, not just aravis/<...>: otherwise republishing
-          # Aravis would drop OpenCV's entry from the shared index.
           foreach ($file in Get-ChildItem -Path $checkout -Recurse -Filter 'BUILDINFO.json' -ErrorAction SilentlyContinue) {
             $rel = $file.Directory.FullName.Substring($checkout.Length + 1) -replace '\\', '/'
             if (($rel -split '/').Count -ne 3) { continue }
@@ -169,21 +163,19 @@ jobs:
             }
           }
           $packages = @($packages | Sort-Object package, version, platform)
-          # -InputObject with an explicit array, so a single package still
-          # serialises as a JSON list instead of a bare object.
           $manifest = @{ packages = @($packages) } | ConvertTo-Json -Depth 6
           [IO.File]::WriteAllText((Join-Path $checkout 'manifest.json'), ($manifest + "`n"))
 
           $rows = @()
-          foreach ($p in $packages) { $rows += "| $($p.package) | $($p.version) | $($p.platform) | $($p.toolchain) | $($p.built_utc) |" }
+          foreach ($p in $packages) { $rows += "| $($p.package) | $($p.version) | $($p.platform) | $($p.modules) | $($p.toolchain) | $($p.built_utc) |" }
           $readme = @(
             '# Build artifacts',
             '',
             'Prebuilt dependencies produced by CI. Consumers download these so they',
-            'need neither meson nor a GLib build of their own.',
+            'need neither cmake nor a toolchain of their own.',
             '',
-            '| Package | Version | Platform | Toolchain | Built (UTC) |',
-            '|---|---|---|---|---|'
+            '| Package | Version | Platform | Modules | Toolchain | Built (UTC) |',
+            '|---|---|---|---|---|---|'
           ) + $rows + @(
             '',
             '## How to consume',
@@ -191,12 +183,12 @@ jobs:
             '```sh',
             'git fetch origin artifacts',
             'git show origin/artifacts:manifest.json',
-            'git archive --remote=origin artifacts aravis/<version>/win-x64 | tar -x',
+            'git archive --remote=origin artifacts opencv/4.14.0/win-x64 | tar -x',
             '```',
             '',
             'Pin the commit of this branch, not the branch name, for a reproducible',
             'build. Each BUILDINFO.json records the toolchain, the subtree tree hash',
-            'and the dependency versions the package was built from.',
+            'and the exact module list the package was built from.',
             ''
           )
           [IO.File]::WriteAllText((Join-Path $checkout 'README.md'), ($readme -join "`n"))
@@ -212,9 +204,9 @@ jobs:
             } else {
               $tree = "$($info.subtree_tree)"
               $sha = $tree.Substring(0, [Math]::Min(12, $tree.Length))
-              git commit --quiet -m "aravis $($info.version) win-x64 (subtree $sha)"
+              git commit --quiet -m "$($info.package) $($info.version) $($info.platform) (subtree $sha)"
               git push --quiet origin HEAD:artifacts
-              Write-Host "published aravis $($info.version) to $dest"
+              Write-Host "published $($info.package) $($info.version) to $dest"
             }
           } finally {
             Pop-Location
@@ -224,7 +216,7 @@ jobs:
         shell: pwsh
         run: |
           $info = Get-Content 'dist\BUILDINFO.json' -Raw | ConvertFrom-Json
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Aravis $($info.version) (api $($info.api_version)), platform $($info.platform)"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "OpenCV $($info.version)$($info.status) (suffix $($info.library_suffix)), modules: $($info.modules)"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ''
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Toolchain: $($info.toolchain)"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Subtree tree: $($info.subtree_tree)"
