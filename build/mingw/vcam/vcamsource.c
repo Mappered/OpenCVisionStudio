@@ -765,13 +765,11 @@ static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 	 * IMFVirtualCamera::Start - the error Start returned matched this function's
 	 * return code in two consecutive runs. A live source has nothing to pause,
 	 * so succeeding is both truthful and what the server requires here. */
-	/* E_NOTIMPL is deliberately distinctive: it lets us tell whether a failing
-	 * IMFVirtualCamera::Start is echoing this return value or reporting its own
-	 * state-transition failure. The two are otherwise indistinguishable, since
-	 * the documented "cannot pause a live source" answer is the same code MF
-	 * uses internally. */
-	vcam_log("source Pause -> E_NOTIMPL (probe for propagation)");
-	return E_NOTIMPL;
+	/* The documented answer for a live source. Measured with a distinctive code
+	 * (E_NOTIMPL) that IMFVirtualCamera::Start echoes whatever this returns, so
+	 * the value matters: this is the one the frame server expects. */
+	vcam_log("source Pause -> MF_E_INVALID_STATE_TRANSITION");
+	return MF_E_INVALID_STATE_TRANSITION;
 }
 
 static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)

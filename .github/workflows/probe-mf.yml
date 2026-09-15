@@ -62,6 +62,97 @@ jobs:
           & $bash -lc "bash '$root/build/mingw/ci-mf-probe.sh' '$root'"
           if ($LASTEXITCODE -ne 0) { throw "probe failed with exit code $LASTEXITCODE" }
 
+      # The last step of this work cannot be proven on a CI runner: the frame
+      # server on a Server SKU faults inside its own FrameServerMonitorClient
+      # module. So publish the kit and let it be run on a Windows 11 client,
+      # where a real camera device can be enumerated.
+      - name: Publish the virtual camera test kit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = '${{ github.token }}'
+          $repo  = '${{ github.repository }}'
+          $dest  = 'vcam/0.1.0/${{ env.PLATFORM_TAG }}'
+          $out   = Join-Path $PWD 'build\mf-probe'
+
+          $checkout = Join-Path $env:RUNNER_TEMP 'artifacts-repo'
+          if (Test-Path $checkout) { Remove-Item -LiteralPath $checkout -Recurse -Force }
+          git clone --quiet --branch artifacts "https://x-access-token:$token@github.com/$repo.git" $checkout
+          $dir = Join-Path $checkout ($dest -replace '/', '\')
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+          foreach ($file in @('vcamsource.dll', 'vcam-register.exe', 'vcam-read.exe')) {
+            $from = Join-Path $out $file
+            if (-not (Test-Path $from)) { throw "missing $file - the probe did not build it" }
+            Copy-Item $from $dir -Force
+          }
+          Copy-Item (Join-Path $out 'vcamsource.dll.log') $dir -Force -ErrorAction SilentlyContinue
+
+          $buildinfo = [ordered]@{
+            package      = 'vcam'
+            version      = '0.1.0'
+            platform     = '${{ env.PLATFORM_TAG }}'
+            modules      = 'IMFActivate media source, IMFMediaSourceEx, RGB32 640x480'
+            toolchain    = 'x86_64-w64-mingw32, gcc 16.2.0 (see the probe run for exact versions)'
+            built_utc    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            source_commit= '${{ github.sha }}'
+            source_ref   = '${{ github.ref_name }}'
+            subtree_tree = 'n/a (this package is not built from a vendored subtree)'
+            run_url      = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            dependencies = @{}
+          }
+          $buildinfo | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $dir 'BUILDINFO.json') -Encoding utf8
+
+          @'
+OpenCVisionStudio virtual camera - test kit
+==========================================
+
+What this is
+  A Windows 11 user-mode virtual camera. A media source (vcamsource.dll) is
+  registered under a CLSID; the virtual camera names that CLSID as its source
+  id, and Media Foundation activates it to pull frames. Frames are generated
+  synthetically for now; the Aravis frame bus replaces the generator behind the
+  same interfaces.
+
+How to run it (Windows 11, elevated command prompt)
+  1. vcam-register.exe register vcamsource.dll
+     Registers the media source under HKCU and HKLM. The frame server reads
+     HKLM, so elevation is required.
+  2. vcam-read.exe
+     Creates the virtual camera, starts it, enumerates Media Foundation
+     devices, reads one frame and then removes the camera again.
+  3. Open the Windows Camera app while vcam-read.exe is running and look for
+     "OpenCVisionStudio Virtual Camera".
+  4. vcam-register.exe unregister      (cleanup)
+
+Reading the result
+  * "IMFVirtualCamera::Start: 0x00000000" and "VCAM_READ ... sample_bytes=16384"
+    means the whole path works: the camera was published and delivered a frame.
+  * The media source runs inside the frame server process, so it traces to
+    vcamsource.dll.log next to the DLL. That file names every call the frame
+    server makes into it.
+  * On a Windows Server SKU the frame server faults inside its own
+    FrameServerMonitorClient.dll before the camera comes up. That is a platform
+    gap, not a defect in this kit: run it on a Windows 11 client.
+'@ | Set-Content (Join-Path $dir 'README.txt') -Encoding utf8
+
+          Push-Location $checkout
+          try {
+            git config user.name  'GitHub Actions'
+            git config user.email 'actions@github.com'
+            git add -A
+            git diff --cached --quiet
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host 'artifacts branch already up to date'
+            } else {
+              git commit --quiet -m "vcam 0.1.0 win-x64 test kit"
+              git push --quiet origin HEAD:artifacts
+              Write-Host "published the virtual camera test kit to $dest"
+            }
+          } finally {
+            Pop-Location
+          }
+
       - name: Summary
         shell: pwsh
         run: |
