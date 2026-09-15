@@ -172,9 +172,37 @@ vcam_dir="$repo_root/build/mingw/vcam"
 
 echo '=== building the virtual camera media source ==='
 gcc -O1 -Wall -Wextra -shared -o "$out_dir/vcamsource.dll" "$vcam_dir/vcamsource.c" \
+	"$vcam_dir/framebus.c" \
 	-Wl,--out-implib,"$out_dir/libvcamsource.dll.a" \
 	-lmf -lmfplat -lmfuuid -lole32 -loleaut32 -luuid -lstrmiids -static-libgcc
 echo "built $out_dir/vcamsource.dll"
+
+# ---------------------------------------------------------------------------
+# The frame bus is the part of the virtual camera pipeline that CI can prove
+# outright: real frames reaching the media source, independent of whether this
+# Windows SKU's frame server will bring a software camera up.
+# ---------------------------------------------------------------------------
+echo '=== frame bus round trip ==='
+gcc -O1 -Wall -Wextra -o "$out_dir/framebus-test.exe" \
+	"$vcam_dir/framebus.c" "$vcam_dir/framebus_test.c" -lole32
+"$out_dir/framebus-test.exe" 2>&1 | tee "$out_dir/framebus-test.log" || true
+framebus_line=$(grep '^FRAMEBUS ' "$out_dir/framebus-test.log" | tail -n1 || true)
+echo "framebus line: ${framebus_line:-none}"
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+	{
+		echo ''
+		echo '### Frame bus'
+		echo ''
+		echo '```'
+		echo "${framebus_line:-FRAMEBUS (no output)}"
+		echo '```'
+		echo ''
+		echo 'created=1 published=3 acquired=1 match=1 means a frame published by one'
+		echo 'process was read back intact by another through shared memory, with the'
+		echo 'geometry and frame index preserved.'
+	} >> "$GITHUB_STEP_SUMMARY"
+fi
 
 # The frame server loads this DLL; anything it depends on that is not a Windows
 # system library has to travel with it.

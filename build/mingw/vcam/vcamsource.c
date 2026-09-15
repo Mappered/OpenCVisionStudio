@@ -32,6 +32,7 @@
 
 #include "vcam_clsid.h"
 #include "vcam_media_interfaces.h"
+#include "framebus.h"
 
 /* {8F2B1E4C-3D6A-4A21-9C7E-5B0D8A3F6C11} */
 static const CLSID CLSID_VcamMediaSource = {
@@ -425,7 +426,24 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 		IMFMediaBuffer_Release(buffer);
 		return hr;
 	}
-	fill_pattern(pixels, self->frame_index++);
+	/* Prefer real frames from the publisher's shared-memory bus; fall back to
+	 * the generator when nobody is publishing, so the camera still comes up on
+	 * a machine with no camera attached. */
+	if (!self->source->bus_checked) {
+		self->source->bus_checked = 1;
+		self->source->bus_ready = framebus_open(&self->source->bus);
+		vcam_log("stream: frame bus %s",
+		         self->source->bus_ready ? "attached (real frames)" : "absent (generating frames)");
+	}
+	if (self->source->bus_ready) {
+		VcamFrameBusHeader info;
+		if (framebus_acquire(&self->source->bus, pixels, VCAM_FRAME_BYTES, &info, 5))
+			self->frame_index = info.frame_index + 1;
+		else
+			fill_pattern(pixels, self->frame_index++);
+	} else {
+		fill_pattern(pixels, self->frame_index++);
+	}
 	IMFMediaBuffer_Unlock(buffer);
 	IMFMediaBuffer_SetCurrentLength(buffer, VCAM_FRAME_BYTES);
 
@@ -481,6 +499,9 @@ struct VcamSource {
 	VcamStream *stream;
 	IMFAttributes *source_attributes;
 	IMFAttributes *stream_attributes;
+	VcamFrameBus bus;
+	int bus_ready;
+	int bus_checked;
 };
 
 static void source_destroy(VcamSource *self)
@@ -501,6 +522,8 @@ static void source_destroy(VcamSource *self)
 		IMFAttributes_Release(self->source_attributes);
 	if (self->stream_attributes)
 		IMFAttributes_Release(self->stream_attributes);
+	if (self->bus_ready)
+		framebus_close(&self->bus);
 	free(self);
 }
 
