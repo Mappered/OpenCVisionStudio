@@ -1,0 +1,16 @@
+{
+  "package": "opencv",
+  "version": "4.14.0",
+  "status": "-pre",
+  "soversion": "414",
+  "library_suffix": "4140",
+  "platform": "win-x64",
+  "modules": "core",
+  "toolchain": "x86_64-w64-mingw32, gcc 16.2.0, cmake 4.4.3",
+  "built_utc": "2026-09-15T22:15:06Z",
+  "source_commit": "7f705adba8699e0501676048ab424ac2016b7822",
+  "source_ref": "external/OpenCV",
+  "subtree_tree": "3b6b3781ee74607c293f018d8ccce5c6017da8d6",
+  "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35029503749",
+  "dependencies": {}
+}
