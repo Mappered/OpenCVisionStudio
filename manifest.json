@@ -5,7 +5,7 @@
       "version": "0.9.3",
       "platform": "win-x64",
       "toolchain": "x86_64-w64-mingw32, gcc 16.2.0",
-      "built_utc": "2026-09-15T21:47:57Z",
+      "built_utc": "2026-09-15T21:51:57Z",
       "subtree_tree": "4547ad556401de6f818e4e03aecef898a4ff874f",
       "source_commit": "6157597eb90feb8278ab213fce23e10251748078",
       "source_ref": "external/Aravis",
