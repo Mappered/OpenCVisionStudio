@@ -1,20 +1,20 @@
 /*
  * OpenCVisionStudio virtual camera media source.
  *
- * This is the COM object the Windows frame server activates, by CLSID, when an
+ * The COM object the Windows frame server activates, by CLSID, when an
  * application opens our virtual camera. It is what turns "we hold an
  * IMFVirtualCamera" into "applications can see a webcam": with nothing
  * registered under the CLSID passed as sourceId, IMFVirtualCamera::Start fails
- * with REGDB_E_CLASSNOTREG, which is how this requirement was established.
+ * with REGDB_E_CLASSNOTREG, which is how that requirement was established.
  *
- * Frames are generated synthetically here on purpose. It keeps the whole path
+ * Frames are generated synthetically on purpose. It keeps the whole path
  * provable in CI with no hardware and no GUI - publish, enumerate, read a frame
- * - and it puts a clean seam where the Aravis frame bus plugs in: that replaces
- * `fill_pattern` with a shared-memory read and nothing else changes.
+ * - and it leaves one clean seam for the Aravis frame bus: replacing
+ * fill_pattern with a shared-memory read changes nothing else.
  *
- * Written in C against MinGW's MF headers, with CINTERFACE + COBJMACROS so the
- * interface vtables and their exact member names come from the system headers
- * rather than from hand-written offsets.
+ * The interfaces are declared in vcam_media_interfaces.h rather than taken from
+ * MinGW's headers, whose IMFMediaStreamVtbl is missing the queue-parameter
+ * methods our object must expose.
  */
 
 #define INITGUID
@@ -31,11 +31,16 @@
 #include <string.h>
 
 #include "vcam_clsid.h"
+#include "vcam_media_interfaces.h"
 
 /* {8F2B1E4C-3D6A-4A21-9C7E-5B0D8A3F6C11} */
 static const CLSID CLSID_VcamMediaSource = {
 	0x8F2B1E4C, 0x3D6A, 0x4A21, { 0x9C, 0x7E, 0x5B, 0x0D, 0x8A, 0x3F, 0x6C, 0x11 }
 };
+
+/* The event queues want a "no extended type" GUID. GUID_NULL is not visible in
+ * this toolchain's headers, and an all-zero GUID is what it means. */
+static const GUID kNullGuid = { 0, 0, 0, { 0, 0, 0, 0, 0, 0, 0, 0 } };
 
 static HMODULE g_module = NULL;
 static LONG g_object_count = 0;
@@ -47,34 +52,50 @@ typedef struct VcamStream VcamStream;
 /* Synthetic frame generator                                          */
 /* ------------------------------------------------------------------ */
 
-/* RGB32 in Media Foundation is BGRA byte order. The pattern changes with each
- * frame so a reader can tell frames apart and prove that frames advance. */
+/* RGB32 in Media Foundation is BGRA byte order, and the pattern advances with
+ * each frame so a reader can tell frames apart. */
 static void fill_pattern(BYTE *pixels, UINT64 frame_index)
 {
 	const UINT32 bar_width = 40;
-	const UINT32 bar_x = (UINT32)((frame_index * 7) % (VCAM_FRAME_WIDTH + bar_width)) - bar_width;
+	UINT32 bar_x;
+
+	if (frame_index == 0)
+		bar_x = 0;
+	else
+		bar_x = (UINT32)((frame_index * 7) % (VCAM_FRAME_WIDTH + bar_width));
 
 	for (UINT32 y = 0; y < VCAM_FRAME_HEIGHT; y++) {
 		BYTE *row = pixels + (size_t)y * VCAM_FRAME_WIDTH * 4;
 		for (UINT32 x = 0; x < VCAM_FRAME_WIDTH; x++) {
 			BYTE *pixel = row + (size_t)x * 4;
 			const int in_bar = (x >= bar_x && x < bar_x + bar_width);
-			pixel[0] = in_bar ? 0xE0 : (BYTE)(x & 0xFF);          /* blue */
-			pixel[1] = in_bar ? 0xE0 : (BYTE)(y & 0xFF);          /* green */
-			pixel[2] = in_bar ? 0xE0 : (BYTE)((frame_index * 3) & 0xFF); /* red */
-			pixel[3] = 0xFF;                                      /* alpha */
+			pixel[0] = in_bar ? 0xE0 : (BYTE)(x & 0xFF);                  /* blue */
+			pixel[1] = in_bar ? 0xE0 : (BYTE)(y & 0xFF);                  /* green */
+			pixel[2] = in_bar ? 0xE0 : (BYTE)((frame_index * 3) & 0xFF);  /* red */
+			pixel[3] = 0xFF;                                              /* alpha */
 		}
 	}
 }
 
+/* The SDK's MAKELONG-style media-type helpers are not declared in this
+ * toolchain, and they are two lines each. */
+static HRESULT set_attribute_size(IMFMediaType *type, REFGUID key, UINT32 width, UINT32 height)
+{
+	return IMFMediaType_SetUINT64(type, key, ((UINT64)width << 32) | height);
+}
+
+static HRESULT set_attribute_ratio(IMFMediaType *type, REFGUID key, UINT32 numerator, UINT32 denominator)
+{
+	return IMFMediaType_SetUINT64(type, key, ((UINT64)numerator << 32) | denominator);
+}
+
 /* ------------------------------------------------------------------ */
-/* Event generator plumbing, shared by source and stream               */
+/* Event generation, shared by source and stream                      */
 /* ------------------------------------------------------------------ */
 
 typedef struct EventPlumbing {
 	IMFMediaEventQueue *queue;
-	DWORD *state;              /* 1 stopped, 2 started, 3 paused, 4 shutdown */
-	LONG *refcount;
+	DWORD *state;    /* 1 stopped, 2 started, 3 paused, 4 shutdown */
 } EventPlumbing;
 
 static HRESULT plumbing_get_event(EventPlumbing *p, DWORD flags, IMFMediaEvent **event)
@@ -98,12 +119,28 @@ static HRESULT plumbing_end_get_event(EventPlumbing *p, IMFAsyncResult *result, 
 	return IMFMediaEventQueue_EndGetEvent(p->queue, result, event);
 }
 
+/* IMFMediaEventGenerator::QueueEvent takes the event's parts; the queue's own
+ * QueueEvent takes a constructed event. Different interfaces, different shapes,
+ * which is what the first compile of this file got wrong. */
 static HRESULT plumbing_queue_event(EventPlumbing *p, MediaEventType type, REFGUID extended_type,
                                     HRESULT status, IMFMediaEvent *event)
 {
+	IMFMediaEvent *constructed = NULL;
+	HRESULT hr;
+
 	if (*p->state == 4)
 		return MF_E_SHUTDOWN;
-	return IMFMediaEventQueue_QueueEvent(p->queue, type, extended_type, status, event);
+	if (event) {
+		IMFMediaEvent_AddRef(event);
+		constructed = event;
+	} else {
+		hr = MFCreateMediaEvent(type, extended_type, status, NULL, &constructed);
+		if (FAILED(hr))
+			return hr;
+	}
+	hr = IMFMediaEventQueue_QueueEvent(p->queue, constructed);
+	IMFMediaEvent_Release(constructed);
+	return hr;
 }
 
 static HRESULT plumbing_queue_param_var(EventPlumbing *p, MediaEventType type, REFGUID extended_type,
@@ -127,37 +164,14 @@ static HRESULT plumbing_queue_param_unk(EventPlumbing *p, MediaEventType type, R
 /* ------------------------------------------------------------------ */
 
 struct VcamStream {
-	const IMFMediaStreamVtbl *lpVtbl;
+	const VcamMediaStreamVtbl *lpVtbl;
 	LONG refcount;
 	DWORD state;
 	IMFMediaEventQueue *queue;
 	VcamSource *source;
 	IMFStreamDescriptor *descriptor;
 	UINT64 frame_index;
-	HANDLE frame_event;    /* set by the frame producer, waited by RequestSample */
 };
-
-static const IMFMediaStreamVtbl vcam_stream_vtbl;
-
-static HRESULT stream_query_interface(IMFMediaStream *iface, REFIID riid, void **out)
-{
-	VcamStream *self = (VcamStream *)iface;
-	if (!out)
-		return E_POINTER;
-	*out = NULL;
-	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMFMediaEventGenerator) ||
-	    IsEqualIID(riid, &IID_IMFMediaStream)) {
-		*out = self;
-		InterlockedIncrement(&self->refcount);
-		return S_OK;
-	}
-	return E_NOINTERFACE;
-}
-
-static ULONG stream_add_ref(IMFMediaStream *iface)
-{
-	return (ULONG)InterlockedIncrement(&((VcamStream *)iface)->refcount);
-}
 
 static void stream_destroy(VcamStream *self)
 {
@@ -170,9 +184,37 @@ static void stream_destroy(VcamStream *self)
 	free(self);
 }
 
-static ULONG stream_release(IMFMediaStream *iface)
+static void stream_release_internal(VcamStream *self)
 {
-	VcamStream *self = (VcamStream *)iface;
+	if (InterlockedDecrement(&self->refcount) == 0) {
+		stream_destroy(self);
+		InterlockedDecrement(&g_object_count);
+	}
+}
+
+static HRESULT STDMETHODCALLTYPE stream_query_interface(void *This, REFIID riid, void **out)
+{
+	VcamStream *self = (VcamStream *)This;
+	if (!out)
+		return E_POINTER;
+	*out = NULL;
+	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMFMediaEventGenerator) ||
+	    IsEqualIID(riid, &IID_IMFMediaStream)) {
+		*out = self;
+		InterlockedIncrement(&self->refcount);
+		return S_OK;
+	}
+	return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE stream_add_ref(void *This)
+{
+	return (ULONG)InterlockedIncrement(&((VcamStream *)This)->refcount);
+}
+
+static ULONG STDMETHODCALLTYPE stream_release(void *This)
+{
+	VcamStream *self = (VcamStream *)This;
 	LONG remaining = InterlockedDecrement(&self->refcount);
 	if (remaining == 0) {
 		stream_destroy(self);
@@ -181,54 +223,54 @@ static ULONG stream_release(IMFMediaStream *iface)
 	return (ULONG)remaining;
 }
 
-static HRESULT stream_get_event(IMFMediaStream *iface, DWORD flags, IMFMediaEvent **event)
+static HRESULT STDMETHODCALLTYPE stream_get_event(void *This, DWORD flags, IMFMediaEvent **event)
 {
-	VcamStream *self = (VcamStream *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamStream *self = (VcamStream *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_get_event(&p, flags, event);
 }
 
-static HRESULT stream_begin_get_event(IMFMediaStream *iface, IMFAsyncCallback *callback, IUnknown *state)
+static HRESULT STDMETHODCALLTYPE stream_begin_get_event(void *This, IMFAsyncCallback *callback, IUnknown *state)
 {
-	VcamStream *self = (VcamStream *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamStream *self = (VcamStream *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_begin_get_event(&p, callback, state);
 }
 
-static HRESULT stream_end_get_event(IMFMediaStream *iface, IMFAsyncResult *result, IMFMediaEvent **event)
+static HRESULT STDMETHODCALLTYPE stream_end_get_event(void *This, IMFAsyncResult *result, IMFMediaEvent **event)
 {
-	VcamStream *self = (VcamStream *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamStream *self = (VcamStream *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_end_get_event(&p, result, event);
 }
 
-static HRESULT stream_queue_event(IMFMediaStream *iface, MediaEventType type, REFGUID extended_type,
-                                  HRESULT status, IMFMediaEvent *event)
+static HRESULT STDMETHODCALLTYPE stream_queue_event(void *This, MediaEventType type, REFGUID extended_type,
+                                                    HRESULT status, IMFMediaEvent *event)
 {
-	VcamStream *self = (VcamStream *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamStream *self = (VcamStream *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_queue_event(&p, type, extended_type, status, event);
 }
 
-static HRESULT stream_queue_param_var(IMFMediaStream *iface, MediaEventType type, REFGUID extended_type,
-                                      HRESULT status, const PROPVARIANT *value)
+static HRESULT STDMETHODCALLTYPE stream_queue_param_var(void *This, MediaEventType type, REFGUID extended_type,
+                                                        HRESULT status, const PROPVARIANT *value)
 {
-	VcamStream *self = (VcamStream *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamStream *self = (VcamStream *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_queue_param_var(&p, type, extended_type, status, value);
 }
 
-static HRESULT stream_queue_param_unk(IMFMediaStream *iface, MediaEventType type, REFGUID extended_type,
-                                      HRESULT status, IUnknown *value)
+static HRESULT STDMETHODCALLTYPE stream_queue_param_unk(void *This, MediaEventType type, REFGUID extended_type,
+                                                        HRESULT status, IUnknown *value)
 {
-	VcamStream *self = (VcamStream *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamStream *self = (VcamStream *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_queue_param_unk(&p, type, extended_type, status, value);
 }
 
-static HRESULT stream_get_media_source(IMFMediaStream *iface, IMFMediaSource **source)
+static HRESULT STDMETHODCALLTYPE stream_get_media_source(void *This, IMFMediaSource **source)
 {
-	VcamStream *self = (VcamStream *)iface;
+	VcamStream *self = (VcamStream *)This;
 	if (!source)
 		return E_POINTER;
 	*source = (IMFMediaSource *)self->source;
@@ -236,9 +278,9 @@ static HRESULT stream_get_media_source(IMFMediaStream *iface, IMFMediaSource **s
 	return S_OK;
 }
 
-static HRESULT stream_get_stream_descriptor(IMFMediaStream *iface, IMFStreamDescriptor **descriptor)
+static HRESULT STDMETHODCALLTYPE stream_get_stream_descriptor(void *This, IMFStreamDescriptor **descriptor)
 {
-	VcamStream *self = (VcamStream *)iface;
+	VcamStream *self = (VcamStream *)This;
 	if (!descriptor)
 		return E_POINTER;
 	*descriptor = self->descriptor;
@@ -247,9 +289,9 @@ static HRESULT stream_get_stream_descriptor(IMFMediaStream *iface, IMFStreamDesc
 }
 
 /* One frame per request, which is what a live source does. */
-static HRESULT stream_request_sample(IMFMediaStream *iface, IUnknown *token)
+static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *token)
 {
-	VcamStream *self = (VcamStream *)iface;
+	VcamStream *self = (VcamStream *)This;
 	IMFMediaBuffer *buffer = NULL;
 	IMFSample *sample = NULL;
 	BYTE *pixels = NULL;
@@ -283,8 +325,8 @@ static HRESULT stream_request_sample(IMFMediaStream *iface, IUnknown *token)
 			IMFSample_SetUnknown(sample, &MFSampleExtension_Token, token);
 	}
 	if (SUCCEEDED(hr)) {
-		EventPlumbing p = { self->queue, &self->state, &self->refcount };
-		hr = plumbing_queue_param_unk(&p, MEMediaSample, GUID_NULL, S_OK, (IUnknown *)sample);
+		EventPlumbing p = { self->queue, &self->state };
+		hr = plumbing_queue_param_unk(&p, MEMediaSample, kNullGuid, S_OK, (IUnknown *)sample);
 	}
 
 	if (sample)
@@ -293,16 +335,18 @@ static HRESULT stream_request_sample(IMFMediaStream *iface, IUnknown *token)
 	return hr;
 }
 
-static const IMFMediaStreamVtbl vcam_stream_vtbl = {
-	.QueryInterface = stream_query_interface,
-	.AddRef = stream_add_ref,
-	.Release = stream_release,
-	.GetEvent = stream_get_event,
-	.BeginGetEvent = stream_begin_get_event,
-	.EndGetEvent = stream_end_get_event,
-	.QueueEvent = stream_queue_event,
-	.QueueEventParamVar = stream_queue_param_var,
-	.QueueEventParamUnk = stream_queue_param_unk,
+static const VcamMediaStreamVtbl vcam_stream_vtbl = {
+	.generator = {
+		.QueryInterface = stream_query_interface,
+		.AddRef = stream_add_ref,
+		.Release = stream_release,
+		.GetEvent = stream_get_event,
+		.BeginGetEvent = stream_begin_get_event,
+		.EndGetEvent = stream_end_get_event,
+		.QueueEvent = stream_queue_event,
+		.QueueEventParamVar = stream_queue_param_var,
+		.QueueEventParamUnk = stream_queue_param_unk,
+	},
 	.GetMediaSource = stream_get_media_source,
 	.GetStreamDescriptor = stream_get_stream_descriptor,
 	.RequestSample = stream_request_sample,
@@ -313,7 +357,7 @@ static const IMFMediaStreamVtbl vcam_stream_vtbl = {
 /* ------------------------------------------------------------------ */
 
 struct VcamSource {
-	const IMFMediaSourceVtbl *lpVtbl;
+	const VcamMediaSourceVtbl *lpVtbl;
 	LONG refcount;
 	DWORD state;
 	IMFMediaEventQueue *queue;
@@ -322,32 +366,10 @@ struct VcamSource {
 	VcamStream *stream;
 };
 
-static HRESULT source_create_stream(VcamSource *self);
-
-static HRESULT source_query_interface(IMFMediaSource *iface, REFIID riid, void **out)
-{
-	VcamSource *self = (VcamSource *)iface;
-	if (!out)
-		return E_POINTER;
-	*out = NULL;
-	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMFMediaEventGenerator) ||
-	    IsEqualIID(riid, &IID_IMFMediaSource)) {
-		*out = self;
-		InterlockedIncrement(&self->refcount);
-		return S_OK;
-	}
-	return E_NOINTERFACE;
-}
-
-static ULONG source_add_ref(IMFMediaSource *iface)
-{
-	return (ULONG)InterlockedIncrement(&((VcamSource *)iface)->refcount);
-}
-
 static void source_destroy(VcamSource *self)
 {
 	if (self->stream) {
-		IMFMediaStream_Release((IMFMediaStream *)self->stream);
+		stream_release_internal(self->stream);
 		self->stream = NULL;
 	}
 	if (self->queue) {
@@ -361,9 +383,29 @@ static void source_destroy(VcamSource *self)
 	free(self);
 }
 
-static ULONG source_release(IMFMediaSource *iface)
+static HRESULT STDMETHODCALLTYPE source_query_interface(void *This, REFIID riid, void **out)
 {
-	VcamSource *self = (VcamSource *)iface;
+	VcamSource *self = (VcamSource *)This;
+	if (!out)
+		return E_POINTER;
+	*out = NULL;
+	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMFMediaEventGenerator) ||
+	    IsEqualIID(riid, &IID_IMFMediaSource)) {
+		*out = self;
+		InterlockedIncrement(&self->refcount);
+		return S_OK;
+	}
+	return E_NOINTERFACE;
+}
+
+static ULONG STDMETHODCALLTYPE source_add_ref(void *This)
+{
+	return (ULONG)InterlockedIncrement(&((VcamSource *)This)->refcount);
+}
+
+static ULONG STDMETHODCALLTYPE source_release(void *This)
+{
+	VcamSource *self = (VcamSource *)This;
 	LONG remaining = InterlockedDecrement(&self->refcount);
 	if (remaining == 0) {
 		source_destroy(self);
@@ -372,63 +414,63 @@ static ULONG source_release(IMFMediaSource *iface)
 	return (ULONG)remaining;
 }
 
-static HRESULT source_get_event(IMFMediaSource *iface, DWORD flags, IMFMediaEvent **event)
+static HRESULT STDMETHODCALLTYPE source_get_event(void *This, DWORD flags, IMFMediaEvent **event)
 {
-	VcamSource *self = (VcamSource *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamSource *self = (VcamSource *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_get_event(&p, flags, event);
 }
 
-static HRESULT source_begin_get_event(IMFMediaSource *iface, IMFAsyncCallback *callback, IUnknown *state)
+static HRESULT STDMETHODCALLTYPE source_begin_get_event(void *This, IMFAsyncCallback *callback, IUnknown *state)
 {
-	VcamSource *self = (VcamSource *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamSource *self = (VcamSource *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_begin_get_event(&p, callback, state);
 }
 
-static HRESULT source_end_get_event(IMFMediaSource *iface, IMFAsyncResult *result, IMFMediaEvent **event)
+static HRESULT STDMETHODCALLTYPE source_end_get_event(void *This, IMFAsyncResult *result, IMFMediaEvent **event)
 {
-	VcamSource *self = (VcamSource *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamSource *self = (VcamSource *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_end_get_event(&p, result, event);
 }
 
-static HRESULT source_queue_event(IMFMediaSource *iface, MediaEventType type, REFGUID extended_type,
-                                  HRESULT status, IMFMediaEvent *event)
+static HRESULT STDMETHODCALLTYPE source_queue_event(void *This, MediaEventType type, REFGUID extended_type,
+                                                    HRESULT status, IMFMediaEvent *event)
 {
-	VcamSource *self = (VcamSource *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamSource *self = (VcamSource *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_queue_event(&p, type, extended_type, status, event);
 }
 
-static HRESULT source_queue_param_var(IMFMediaSource *iface, MediaEventType type, REFGUID extended_type,
-                                      HRESULT status, const PROPVARIANT *value)
+static HRESULT STDMETHODCALLTYPE source_queue_param_var(void *This, MediaEventType type, REFGUID extended_type,
+                                                        HRESULT status, const PROPVARIANT *value)
 {
-	VcamSource *self = (VcamSource *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamSource *self = (VcamSource *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_queue_param_var(&p, type, extended_type, status, value);
 }
 
-static HRESULT source_queue_param_unk(IMFMediaSource *iface, MediaEventType type, REFGUID extended_type,
-                                      HRESULT status, IUnknown *value)
+static HRESULT STDMETHODCALLTYPE source_queue_param_unk(void *This, MediaEventType type, REFGUID extended_type,
+                                                        HRESULT status, IUnknown *value)
 {
-	VcamSource *self = (VcamSource *)iface;
-	EventPlumbing p = { self->queue, &self->state, &self->refcount };
+	VcamSource *self = (VcamSource *)This;
+	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_queue_param_unk(&p, type, extended_type, status, value);
 }
 
-static HRESULT source_get_characteristics(IMFMediaSource *iface, DWORD *characteristics)
+static HRESULT STDMETHODCALLTYPE source_get_characteristics(void *This, DWORD *characteristics)
 {
+	(void)This;
 	if (!characteristics)
 		return E_POINTER;
 	*characteristics = MFMEDIASOURCE_IS_LIVE;
 	return S_OK;
 }
 
-/* Builds the single video stream descriptor: RGB32, 640x480, 30 fps. */
-static HRESULT source_build_presentation(IMFMediaSource *iface)
+/* One video stream: RGB32, 640x480, 30 fps. */
+static HRESULT source_build_presentation(VcamSource *self)
 {
-	VcamSource *self = (VcamSource *)iface;
 	IMFMediaType *media_type = NULL;
 	IMFMediaTypeHandler *handler = NULL;
 	HRESULT hr;
@@ -442,11 +484,11 @@ static HRESULT source_build_presentation(IMFMediaSource *iface)
 	if (SUCCEEDED(hr))
 		hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFVideoFormat_RGB32);
 	if (SUCCEEDED(hr))
-		hr = MFSetAttributeSize(media_type, &MF_MT_FRAME_SIZE, VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
+		hr = set_attribute_size(media_type, &MF_MT_FRAME_SIZE, VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
 	if (SUCCEEDED(hr))
-		hr = MFSetAttributeRatio(media_type, &MF_MT_FRAME_RATE, VCAM_FRAME_FPS, 1);
+		hr = set_attribute_ratio(media_type, &MF_MT_FRAME_RATE, VCAM_FRAME_FPS, 1);
 	if (SUCCEEDED(hr))
-		hr = MFSetAttributeRatio(media_type, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
+		hr = set_attribute_ratio(media_type, &MF_MT_PIXEL_ASPECT_RATIO, 1, 1);
 	if (SUCCEEDED(hr))
 		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
 	if (SUCCEEDED(hr))
@@ -467,15 +509,15 @@ static HRESULT source_build_presentation(IMFMediaSource *iface)
 	return hr;
 }
 
-static HRESULT source_create_presentation_descriptor(IMFMediaSource *iface, IMFPresentationDescriptor **descriptor)
+static HRESULT STDMETHODCALLTYPE source_create_presentation_descriptor(void *This, IMFPresentationDescriptor **descriptor)
 {
-	VcamSource *self = (VcamSource *)iface;
+	VcamSource *self = (VcamSource *)This;
 	HRESULT hr;
 	if (!descriptor)
 		return E_POINTER;
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
-	hr = source_build_presentation(iface);
+	hr = source_build_presentation(self);
 	if (FAILED(hr))
 		return hr;
 	*descriptor = self->descriptor;
@@ -488,7 +530,7 @@ static HRESULT source_create_stream(VcamSource *self)
 	HRESULT hr;
 	if (self->stream)
 		return S_OK;
-	hr = source_build_presentation((IMFMediaSource *)self);
+	hr = source_build_presentation(self);
 	if (FAILED(hr))
 		return hr;
 	self->stream = (VcamStream *)calloc(1, sizeof(VcamStream));
@@ -511,12 +553,15 @@ static HRESULT source_create_stream(VcamSource *self)
 	return S_OK;
 }
 
-static HRESULT source_start(IMFMediaSource *iface, IMFPresentationDescriptor *descriptor,
-                            const GUID *time_format, const PROPVARIANT *start_position)
+static HRESULT STDMETHODCALLTYPE source_start(void *This, IMFPresentationDescriptor *descriptor,
+                                              const GUID *time_format, const PROPVARIANT *start_position)
 {
-	VcamSource *self = (VcamSource *)iface;
-	HRESULT hr;
+	VcamSource *self = (VcamSource *)This;
 	EventPlumbing p;
+	HRESULT hr;
+
+	(void)descriptor;
+	(void)time_format;
 
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
@@ -527,25 +572,23 @@ static HRESULT source_start(IMFMediaSource *iface, IMFPresentationDescriptor *de
 
 	p.queue = self->queue;
 	p.state = &self->state;
-	p.refcount = &self->refcount;
 
-	hr = plumbing_queue_param_unk(&p, MENewStream, GUID_NULL, S_OK, (IUnknown *)self->stream);
+	hr = plumbing_queue_param_unk(&p, MENewStream, kNullGuid, S_OK, (IUnknown *)self->stream);
 	if (SUCCEEDED(hr))
-		hr = plumbing_queue_param_unk(&p, MEUpdatedStream, GUID_NULL, S_OK, (IUnknown *)self->stream);
+		hr = plumbing_queue_param_unk(&p, MEUpdatedStream, kNullGuid, S_OK, (IUnknown *)self->stream);
 	if (SUCCEEDED(hr))
-		hr = plumbing_queue_param_var(&p, MESourceStarted, GUID_NULL, S_OK, start_position);
-
+		hr = plumbing_queue_param_var(&p, MESourceStarted, kNullGuid, S_OK, start_position);
 	if (SUCCEEDED(hr)) {
 		self->state = 2;
 		self->stream->state = 2;
-		hr = plumbing_queue_param_var(&p, MEStreamStarted, GUID_NULL, S_OK, start_position);
+		hr = plumbing_queue_param_var(&p, MEStreamStarted, kNullGuid, S_OK, start_position);
 	}
 	return hr;
 }
 
-static HRESULT source_stop(IMFMediaSource *iface)
+static HRESULT STDMETHODCALLTYPE source_stop(void *This)
 {
-	VcamSource *self = (VcamSource *)iface;
+	VcamSource *self = (VcamSource *)This;
 	EventPlumbing p;
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
@@ -554,17 +597,16 @@ static HRESULT source_stop(IMFMediaSource *iface)
 	self->state = 1;
 	p.queue = self->queue;
 	p.state = &self->state;
-	p.refcount = &self->refcount;
 	if (self->stream) {
 		self->stream->state = 1;
-		plumbing_queue_param_var(&p, MEStreamStopped, GUID_NULL, S_OK, NULL);
+		plumbing_queue_param_var(&p, MEStreamStopped, kNullGuid, S_OK, NULL);
 	}
-	return plumbing_queue_param_var(&p, MESourceStopped, GUID_NULL, S_OK, NULL);
+	return plumbing_queue_param_var(&p, MESourceStopped, kNullGuid, S_OK, NULL);
 }
 
-static HRESULT source_pause(IMFMediaSource *iface)
+static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 {
-	VcamSource *self = (VcamSource *)iface;
+	VcamSource *self = (VcamSource *)This;
 	EventPlumbing p;
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
@@ -573,37 +615,39 @@ static HRESULT source_pause(IMFMediaSource *iface)
 	self->state = 3;
 	p.queue = self->queue;
 	p.state = &self->state;
-	p.refcount = &self->refcount;
 	if (self->stream) {
 		self->stream->state = 3;
-		plumbing_queue_param_var(&p, MEStreamPaused, GUID_NULL, S_OK, NULL);
+		plumbing_queue_param_var(&p, MEStreamPaused, kNullGuid, S_OK, NULL);
 	}
-	return plumbing_queue_param_var(&p, MESourcePaused, GUID_NULL, S_OK, NULL);
+	return plumbing_queue_param_var(&p, MESourcePaused, kNullGuid, S_OK, NULL);
 }
 
-static HRESULT source_shutdown(IMFMediaSource *iface)
+static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
 {
-	VcamSource *self = (VcamSource *)iface;
+	VcamSource *self = (VcamSource *)This;
 	self->state = 4;
-	if (self->stream)
+	if (self->stream) {
 		self->stream->state = 4;
+		if (self->stream->queue)
+			IMFMediaEventQueue_Shutdown(self->stream->queue);
+	}
 	if (self->queue)
 		IMFMediaEventQueue_Shutdown(self->queue);
-	if (self->stream && self->stream->queue)
-		IMFMediaEventQueue_Shutdown(self->stream->queue);
 	return S_OK;
 }
 
-static const IMFMediaSourceVtbl vcam_source_vtbl = {
-	.QueryInterface = source_query_interface,
-	.AddRef = source_add_ref,
-	.Release = source_release,
-	.GetEvent = source_get_event,
-	.BeginGetEvent = source_begin_get_event,
-	.EndGetEvent = source_end_get_event,
-	.QueueEvent = source_queue_event,
-	.QueueEventParamVar = source_queue_param_var,
-	.QueueEventParamUnk = source_queue_param_unk,
+static const VcamMediaSourceVtbl vcam_source_vtbl = {
+	.generator = {
+		.QueryInterface = source_query_interface,
+		.AddRef = source_add_ref,
+		.Release = source_release,
+		.GetEvent = source_get_event,
+		.BeginGetEvent = source_begin_get_event,
+		.EndGetEvent = source_end_get_event,
+		.QueueEvent = source_queue_event,
+		.QueueEventParamVar = source_queue_param_var,
+		.QueueEventParamUnk = source_queue_param_unk,
+	},
 	.GetCharacteristics = source_get_characteristics,
 	.CreatePresentationDescriptor = source_create_presentation_descriptor,
 	.Start = source_start,
@@ -630,8 +674,8 @@ static HRESULT vcam_source_create(IUnknown *outer, REFIID riid, void **out)
 		return hr;
 	}
 	InterlockedIncrement(&g_object_count);
-	hr = source_query_interface((IMFMediaSource *)self, riid, out);
-	source_release((IMFMediaSource *)self);
+	hr = source_query_interface(self, riid, out);
+	source_release(self);
 	return hr;
 }
 
@@ -644,43 +688,42 @@ typedef struct VcamClassFactory {
 	LONG refcount;
 } VcamClassFactory;
 
-static HRESULT factory_query_interface(IClassFactory *iface, REFIID riid, void **out)
+static HRESULT STDMETHODCALLTYPE factory_query_interface(IClassFactory *This, REFIID riid, void **out)
 {
-	VcamClassFactory *self = (VcamClassFactory *)iface;
 	if (!out)
 		return E_POINTER;
 	*out = NULL;
 	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IClassFactory)) {
-		*out = self;
-		InterlockedIncrement(&self->refcount);
+		*out = This;
+		InterlockedIncrement(&((VcamClassFactory *)This)->refcount);
 		return S_OK;
 	}
 	return E_NOINTERFACE;
 }
 
-static ULONG factory_add_ref(IClassFactory *iface)
+static ULONG STDMETHODCALLTYPE factory_add_ref(IClassFactory *This)
 {
-	return (ULONG)InterlockedIncrement(&((VcamClassFactory *)iface)->refcount);
+	return (ULONG)InterlockedIncrement(&((VcamClassFactory *)This)->refcount);
 }
 
-static ULONG factory_release(IClassFactory *iface)
+static ULONG STDMETHODCALLTYPE factory_release(IClassFactory *This)
 {
-	VcamClassFactory *self = (VcamClassFactory *)iface;
-	LONG remaining = InterlockedDecrement(&self->refcount);
+	LONG remaining = InterlockedDecrement(&((VcamClassFactory *)This)->refcount);
 	if (remaining == 0)
-		free(self);
+		free(This);
 	return (ULONG)remaining;
 }
 
-static HRESULT factory_create_instance(IClassFactory *iface, IUnknown *outer, REFIID riid, void **out)
+static HRESULT STDMETHODCALLTYPE factory_create_instance(IClassFactory *This, IUnknown *outer,
+                                                         REFIID riid, void **out)
 {
-	(void)iface;
+	(void)This;
 	return vcam_source_create(outer, riid, out);
 }
 
-static HRESULT factory_lock_server(IClassFactory *iface, BOOL lock)
+static HRESULT STDMETHODCALLTYPE factory_lock_server(IClassFactory *This, BOOL lock)
 {
-	(void)iface;
+	(void)This;
 	(void)lock;
 	return S_OK;
 }
@@ -734,4 +777,3 @@ __declspec(dllexport) HRESULT WINAPI DllCanUnloadNow(void)
 {
 	return g_object_count == 0 ? S_OK : S_FALSE;
 }
-
