@@ -18,6 +18,9 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
+/* WIN32_LEAN_AND_MEAN keeps OLE/COM out of windows.h, and CoInitializeEx lives
+ * here. Needed because the virtual camera API requires a COM apartment. */
+#include <objbase.h>
 #include <stdio.h>
 
 /* Documented values. Only the software camera source type exists today. */
