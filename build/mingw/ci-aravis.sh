@@ -20,10 +20,6 @@ dist=${4:?missing dist dir}
 # be first on PATH so gcc, pkg-config and glib-* come from there.
 export PATH=/mingw64/bin:$PATH
 
-echo '=== toolchain ==='
-gcc -dumpmachine
-gcc -dumpversion
-
 echo '=== dependencies (pacman) ==='
 pacman -Sy --noconfirm --disable-download-timeout
 pacman -S --noconfirm --needed --disable-download-timeout \
@@ -34,6 +30,15 @@ pacman -S --noconfirm --needed --disable-download-timeout \
 	mingw-w64-x86_64-libusb \
 	mingw-w64-x86_64-pkgconf \
 	zip
+
+# Only meaningful after pacman has installed them: a fresh MSYS2 has no
+# MINGW64 toolchain at all, which is exactly why this check comes second.
+echo '=== toolchain ==='
+command -v gcc >/dev/null 2>&1 || { echo 'error: gcc not on PATH after pacman install' >&2; exit 1; }
+command -v pkg-config >/dev/null 2>&1 || { echo 'error: pkg-config not on PATH after pacman install' >&2; exit 1; }
+gcc -dumpmachine
+gcc -dumpversion
+pkg-config --version
 
 echo '=== build ==='
 bash "$repo_root/build/mingw/build-aravis.sh" "$aravis_dir" "$staging"
