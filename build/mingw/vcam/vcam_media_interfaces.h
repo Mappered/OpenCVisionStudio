@@ -52,6 +52,13 @@ typedef struct VcamMediaSourceVtbl {
 	HRESULT (STDMETHODCALLTYPE *Stop)(void *This);
 	HRESULT (STDMETHODCALLTYPE *Pause)(void *This);
 	HRESULT (STDMETHODCALLTYPE *Shutdown)(void *This);
+	/* IMFMediaSourceEx, which the frame server asks for by name:
+	 * {3C9B2EB9-86D5-4514-A394-F56664F9F0D8}. ActivateObject on the activator
+	 * receives IID_IMFMediaSourceEx, not IID_IMFMediaSource, and answering
+	 * E_NOINTERFACE is what stalls IMFVirtualCamera::Start. */
+	HRESULT (STDMETHODCALLTYPE *GetSourceAttributes)(void *This, IMFAttributes **attributes);
+	HRESULT (STDMETHODCALLTYPE *GetStreamAttributes)(void *This, DWORD stream_identifier, IMFAttributes **attributes);
+	HRESULT (STDMETHODCALLTYPE *SetD3DManager)(void *This, IUnknown *manager);
 } VcamMediaSourceVtbl;
 
 typedef struct VcamMediaStreamVtbl {

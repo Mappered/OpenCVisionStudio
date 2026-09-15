@@ -44,6 +44,13 @@ static const CLSID CLSID_VcamMediaSource = {
 static const GUID kNullGuidValue = { 0, 0, 0, { 0, 0, 0, 0, 0, 0, 0, 0 } };
 #define kNullGuid (&kNullGuidValue)
 
+/* {3C9B2EB9-86D5-4514-A394-F56664F9F0D8} - not declared in this toolchain's
+ * headers, taken from Microsoft's mfidl.h. The frame server asks for this IID
+ * by name, so the source must answer it. */
+static const GUID kIID_IMFMediaSourceEx = {
+	0x3C9B2EB9, 0x86D5, 0x4514, { 0xA3, 0x94, 0xF5, 0x66, 0x64, 0xF9, 0xF0, 0xD8 }
+};
+
 static HMODULE g_module = NULL;
 static LONG g_object_count = 0;
 
@@ -90,6 +97,7 @@ static const char *iid_name(REFIID riid)
 	if (IsEqualIID(riid, &IID_IMFAttributes)) return "IMFAttributes";
 	if (IsEqualIID(riid, &IID_IMFGetService)) return "IMFGetService";
 	if (IsEqualIID(riid, &IID_IMFShutdown)) return "IMFShutdown";
+	if (IsEqualIID(riid, &kIID_IMFMediaSourceEx)) return "IMFMediaSourceEx";
 	/* Several interfaces the frame server may ask for - IMFMediaSourceEx,
 	 * IMFSampleAllocatorControl, IMFRealTimeClient, IMFQualityAdvise - are not
 	 * declared in this toolchain's headers, so they fall through to "(other)"
@@ -437,6 +445,8 @@ struct VcamSource {
 	IMFPresentationDescriptor *descriptor;
 	IMFStreamDescriptor *stream_descriptor;
 	VcamStream *stream;
+	IMFAttributes *source_attributes;
+	IMFAttributes *stream_attributes;
 };
 
 static void source_destroy(VcamSource *self)
@@ -453,6 +463,10 @@ static void source_destroy(VcamSource *self)
 		IMFPresentationDescriptor_Release(self->descriptor);
 	if (self->stream_descriptor)
 		IMFStreamDescriptor_Release(self->stream_descriptor);
+	if (self->source_attributes)
+		IMFAttributes_Release(self->source_attributes);
+	if (self->stream_attributes)
+		IMFAttributes_Release(self->stream_attributes);
 	free(self);
 }
 
@@ -464,7 +478,7 @@ static HRESULT STDMETHODCALLTYPE source_query_interface(void *This, REFIID riid,
 		return E_POINTER;
 	*out = NULL;
 	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMFMediaEventGenerator) ||
-	    IsEqualIID(riid, &IID_IMFMediaSource)) {
+	    IsEqualIID(riid, &IID_IMFMediaSource) || IsEqualIID(riid, &kIID_IMFMediaSourceEx)) {
 		*out = self;
 		InterlockedIncrement(&self->refcount);
 		hr = S_OK;
@@ -719,6 +733,55 @@ static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
 	return S_OK;
 }
 
+/* IMFMediaSourceEx. The frame server asks for these three; answering
+ * E_NOINTERFACE to the interface itself is what stalled Start. Source and stream
+ * attributes are a plain store, and D3D callbacks are accepted but unused:
+ * returning E_NOTIMPL for SetD3DManager would make the server abandon the
+ * source rather than fall back to system memory. */
+static HRESULT STDMETHODCALLTYPE source_get_source_attributes(void *This, IMFAttributes **attributes)
+{
+	VcamSource *self = (VcamSource *)This;
+	HRESULT hr = S_OK;
+	if (!attributes)
+		return E_POINTER;
+	*attributes = NULL;
+	if (!self->source_attributes)
+		hr = MFCreateAttributes(&self->source_attributes, 1);
+	if (SUCCEEDED(hr)) {
+		IMFAttributes_SetString(self->source_attributes, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, VCAM_FRIENDLY_NAME);
+		*attributes = self->source_attributes;
+		IMFAttributes_AddRef(*attributes);
+	}
+	vcam_log("source GetSourceAttributes -> 0x%08lx", (unsigned long)hr);
+	return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE source_get_stream_attributes(void *This, DWORD stream_identifier,
+                                                              IMFAttributes **attributes)
+{
+	VcamSource *self = (VcamSource *)This;
+	HRESULT hr = S_OK;
+	if (!attributes)
+		return E_POINTER;
+	*attributes = NULL;
+	if (!self->stream_attributes)
+		hr = MFCreateAttributes(&self->stream_attributes, 1);
+	if (SUCCEEDED(hr)) {
+		*attributes = self->stream_attributes;
+		IMFAttributes_AddRef(*attributes);
+	}
+	vcam_log("source GetStreamAttributes(stream=%lu) -> 0x%08lx", (unsigned long)stream_identifier,
+	         (unsigned long)hr);
+	return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE source_set_d3d_manager(void *This, IUnknown *manager)
+{
+	(void)This;
+	vcam_log("source SetD3DManager(%p): accepted, system memory is used", (void *)manager);
+	return S_OK;
+}
+
 static const VcamMediaSourceVtbl vcam_source_vtbl = {
 	.generator = {
 		.QueryInterface = source_query_interface,
@@ -737,6 +800,9 @@ static const VcamMediaSourceVtbl vcam_source_vtbl = {
 	.Stop = source_stop,
 	.Pause = source_pause,
 	.Shutdown = source_shutdown,
+	.GetSourceAttributes = source_get_source_attributes,
+	.GetStreamAttributes = source_get_stream_attributes,
+	.SetD3DManager = source_set_d3d_manager,
 };
 
 static HRESULT vcam_source_create(IUnknown *outer, REFIID riid, void **out)
