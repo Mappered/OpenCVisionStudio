@@ -58,3 +58,15 @@ jobs:
           echo "Subtree updated successfully!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Subtree:** ${{ inputs.subtree }}" >> $GITHUB_STEP_SUMMARY
+
+  # Rebuild the Aravis package from the freshly updated subtree. This has to be a
+  # reusable-workflow call rather than a push trigger: the update job pushes with
+  # GITHUB_TOKEN, and GitHub does not start workflow runs for events caused by
+  # that token.
+  build-aravis:
+    needs: update
+    if: inputs.subtree == 'aravis'
+    uses: ./.github/workflows/build-aravis.yml
+    with:
+      source_ref: external/Aravis
+      publish: true
