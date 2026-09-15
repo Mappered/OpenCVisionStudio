@@ -1,0 +1,16 @@
+{
+  "package": "opencv",
+  "version": "4.14.0",
+  "status": "-pre",
+  "platform": "wasm32",
+  "modules": "core,imgproc",
+  "simd": false,
+  "config": "platforms/js/opencv_js.config.py",
+  "toolchain": "emscripten 6.0.9 (4e4223852a0835923411059a3929907d7df1232e), python3 3.12.3",
+  "built_utc": "2026-09-15T22:33:01Z",
+  "source_commit": "7f705adba8699e0501676048ab424ac2016b7822",
+  "source_ref": "external/OpenCV",
+  "subtree_tree": "3b6b3781ee74607c293f018d8ccce5c6017da8d6",
+  "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35031048417",
+  "dependencies": {}
+}

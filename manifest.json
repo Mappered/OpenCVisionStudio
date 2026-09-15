@@ -3,33 +3,55 @@
     {
       "package": "aravis",
       "version": "0.9.3",
+      "api_version": "0.10",
       "platform": "win-x64",
       "toolchain": "x86_64-w64-mingw32, gcc 16.2.0",
       "built_utc": "2026-09-15T21:51:57Z",
-      "subtree_tree": "4547ad556401de6f818e4e03aecef898a4ff874f",
       "source_commit": "6157597eb90feb8278ab213fce23e10251748078",
       "source_ref": "external/Aravis",
-      "path": "aravis/0.9.3/win-x64",
-      "modules": null,
+      "subtree_tree": "4547ad556401de6f818e4e03aecef898a4ff874f",
+      "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35027769783",
       "dependencies": {
         "glib-2.0": "2.90.0",
         "libxml-2.0": "2.15.4",
         "libusb-1.0": "1.0.30",
         "zlib": "1.3.2"
-      }
+      },
+      "path": "aravis/0.9.3/win-x64"
     },
     {
       "package": "opencv",
       "version": "4.14.0",
-      "platform": "win-x64",
-      "toolchain": "x86_64-w64-mingw32, gcc 16.2.0, cmake 4.4.3",
-      "built_utc": "2026-09-15T22:15:06Z",
-      "subtree_tree": "3b6b3781ee74607c293f018d8ccce5c6017da8d6",
+      "status": "-pre",
+      "platform": "wasm32",
+      "modules": "core,imgproc",
+      "simd": false,
+      "config": "platforms/js/opencv_js.config.py",
+      "toolchain": "emscripten 6.0.9 (4e4223852a0835923411059a3929907d7df1232e), python3 3.12.3",
+      "built_utc": "2026-09-15T22:33:01Z",
       "source_commit": "7f705adba8699e0501676048ab424ac2016b7822",
       "source_ref": "external/OpenCV",
-      "path": "opencv/4.14.0/win-x64",
+      "subtree_tree": "3b6b3781ee74607c293f018d8ccce5c6017da8d6",
+      "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35031048417",
+      "dependencies": {},
+      "path": "opencv/4.14.0/wasm32"
+    },
+    {
+      "package": "opencv",
+      "version": "4.14.0",
+      "status": "-pre",
+      "soversion": "414",
+      "library_suffix": "4140",
+      "platform": "win-x64",
       "modules": "core",
-      "dependencies": {}
+      "toolchain": "x86_64-w64-mingw32, gcc 16.2.0, cmake 4.4.3",
+      "built_utc": "2026-09-15T22:15:06Z",
+      "source_commit": "7f705adba8699e0501676048ab424ac2016b7822",
+      "source_ref": "external/OpenCV",
+      "subtree_tree": "3b6b3781ee74607c293f018d8ccce5c6017da8d6",
+      "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35029503749",
+      "dependencies": {},
+      "path": "opencv/4.14.0/win-x64"
     }
   ]
 }
