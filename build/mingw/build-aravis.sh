@@ -144,7 +144,10 @@ mapfile -t private_headers < <(cd "$src_src" && ls *private.h | grep -v 'v4l2' |
 [ "${#public_headers[@]}" -gt 10 ]  || { echo "error: unexpected public header count" >&2; exit 1; }
 [ "${#private_headers[@]}" -gt 5 ]  || { echo "error: unexpected private header count" >&2; exit 1; }
 
-enum_header_fhead() { printf '#ifndef %s\n#define %s\n\n#include <arvapi.h>\n\nG_BEGIN_DECLS\n' "$1" "$1"; }
+# glib-object.h is not optional here: the generated declarations use GType, and
+# sources such as arvdebug.c include this header before anything that would pull
+# it in. meson's mkenums_simple emits the same two includes.
+enum_header_fhead() { printf '#ifndef %s\n#define %s\n\n#include <glib-object.h>\n#include <arvapi.h>\n\nG_BEGIN_DECLS\n' "$1" "$1"; }
 enum_header_ftail()  { printf '\nG_END_DECLS\n\n#endif\n'; }
 
 generate_enum_types() {
