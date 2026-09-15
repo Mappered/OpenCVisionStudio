@@ -70,12 +70,17 @@ int main(int argc, char **argv)
 
 	if (_stricmp(argv[1], "register") == 0) {
 		wchar_t dll_path[MAX_PATH];
+		wchar_t wide_input[MAX_PATH];
 		DWORD length;
 		if (argc < 3) {
 			printf("error: register needs the DLL path\n");
 			return 2;
 		}
-		length = GetFullPathNameA(argv[2], MAX_PATH, dll_path, NULL);
+		if (mbstowcs(wide_input, argv[2], MAX_PATH) == (size_t)-1) {
+			printf("error: cannot convert %s to a wide path\n", argv[2]);
+			return 1;
+		}
+		length = GetFullPathNameW(wide_input, MAX_PATH, dll_path, NULL);
 		if (length == 0 || length >= MAX_PATH) {
 			printf("error: cannot resolve %s\n", argv[2]);
 			return 1;

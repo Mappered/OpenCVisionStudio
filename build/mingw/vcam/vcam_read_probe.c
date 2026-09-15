@@ -19,6 +19,7 @@
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <stdio.h>
+#include <string.h>
 #include <wchar.h>
 
 #include "mfvcam.h"
