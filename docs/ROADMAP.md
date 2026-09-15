@@ -73,6 +73,32 @@ and images arrive as canvas/`ImageData`. Every registry entry therefore carries
 a capability flag per backend, and the emitter must refuse rather than
 mis-lower.
 
+## Windows virtual camera (Aravis to webcam)
+
+Goal: expose a libusb-win32 / Aravis camera to other applications as a normal
+camera device, using the Windows 11 user-mode virtual camera API rather than a
+kernel driver. Findings below are measured, not assumed - each one came from a
+CI run of `build/mingw/mf-vcam-dyn.c` (see the Probe Media Foundation workflow).
+
+| Question | Answer |
+|---|---|
+| Does MinGW-w64 ship `mfvirtualcamera.h`? | **No.** MSYS2's headers (14.0.0) predate the API, so it cannot be linked against |
+| Does MinGW build Media Foundation at all? | **Yes** - headers and import libraries all present, C/COM path works |
+| Where is the export, if not in mfplat? | **`mfsensorgroup.dll`**. `mfplat`, `mfcore`, `mf`, `mfreadwrite`, `mfmediaengine` and `windows.media` all say no. Documentation claiming mfplat is wrong |
+| Can we reach it without headers? | **Yes** - `LoadLibraryW` + `GetProcAddress`, with our own declarations |
+| Does the declaration match the ABI? | **Yes** - verified by calling it. The real prototype has **8** parameters: `(type, lifetime, access, friendlyName, sourceId, const GUID* categories, ULONG categoryCount, IMFVirtualCamera** out)`. A 7-parameter guess with an attributes object faulted, which is how this was caught |
+| Is package identity required? | **Not for `Lifetime_Session` + `Access_CurrentUser`** - creation succeeded in an unpackaged CI process, contrary to the assumption that a sparse MSIX is a hard prerequisite |
+| Capability detection | `MFIsVirtualCameraTypeSupported(SoftwareCameraSource)` returns S_OK with supported=TRUE |
+| `IMFVirtualCamera` IID | `1C08A864-EF6C-4C75-AF59-5F2D68DA9563` |
+| Method order | `AddDeviceSourceInfo`, `AddProperty`, `AddRegistryEntry`, `Start`, `Stop`, `Remove`, `GetMediaSource`, `SendCameraProperty`, `CreateSyncEvent`, `CreateSyncSemaphore`, `Shutdown` |
+
+Remaining work to reach the goal: implement the media source that feeds the
+camera (`IMFMediaSource` + `IMFMediaStream`, delivering frames from the grabber
+layer), publish it with `AddDeviceSourceInfo`/`Start`, and verify that a real
+application enumerates and previews it. First frame source should be the
+synthetic/test path so this works with no camera attached; Aravis is wired in
+after the device is visible.
+
 ## Milestones
 
 | # | Deliverable | Proof |
@@ -89,6 +115,7 @@ mis-lower.
 | M9 | Emitter: IR → OpenCV C++ and Python, step-synced code window | emitted C++ compiles and reproduces corpus results |
 | M10 | Real `.hdev` text open/save + unsupported-operator report ranked by frequency | importing a real program lists the next operators to implement, in order |
 | M11 | Media Foundation webcam backend. Step 0 is a CI probe: prove MinGW's MF headers and import libraries actually build and link something that enumerates devices | enumeration and pixel-format conversion covered in CI; frame capture verified on a machine with a webcam, since runners have none |
+| M12 | Aravis to webcam: user-mode virtual camera. API reached by dynamic resolution (headers predate it), media source implemented and published | a separate process (browser, VLC, `ffmpeg -f dshow`) enumerates and shows the virtual camera, fed by a real Aravis camera |
 
 ## Aravis integration
 
