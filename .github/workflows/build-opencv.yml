@@ -29,6 +29,14 @@ on:
         description: Comma separated module list for BUILD_LIST
         type: string
         default: core
+      wasm:
+        description: Also build the WASM package (separate ubuntu workflow)
+        type: boolean
+        default: true
+      wasm_simd:
+        description: Build the WASM package with SIMD
+        type: boolean
+        default: false
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -45,6 +53,16 @@ on:
         type: string
         required: false
         default: core
+      wasm:
+        description: Also build the WASM package (separate ubuntu workflow)
+        type: boolean
+        required: false
+        default: false
+      wasm_simd:
+        description: Build the WASM package with SIMD
+        type: boolean
+        required: false
+        default: false
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -221,3 +239,17 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Toolchain: $($info.toolchain)"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Subtree tree: $($info.subtree_tree)"
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Source commit: $($info.source_commit) ($($info.source_ref))"
+
+  # The WASM package is built by a separate reusable workflow that runs on
+  # ubuntu: the target is wasm32, so the host OS is irrelevant, and emscripten is
+  # far better supported on Linux than under MSYS2. Called from here so the
+  # Windows run produces both the native and the browser artifact.
+  wasm:
+    needs: build-and-publish
+    if: ${{ inputs.wasm }}
+    uses: ./.github/workflows/build-opencv-wasm.yml
+    with:
+      source_ref: ${{ inputs.source_ref }}
+      modules: ${{ inputs.modules }}
+      simd: ${{ inputs.wasm_simd }}
+      publish: ${{ inputs.publish }}

@@ -175,15 +175,18 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $checkout 'manifest.json'), ($manifest + "`n"))
 
           $rows = @()
-          foreach ($p in $packages) { $rows += "| $($p.package) | $($p.version) | $($p.platform) | $($p.toolchain) | $($p.built_utc) |" }
+          foreach ($p in $packages) {
+            $mods = if ($p.modules) { $p.modules } else { '-' }
+            $rows += "| $($p.package) | $($p.version) | $($p.platform) | $mods | $($p.toolchain) | $($p.built_utc) |"
+          }
           $readme = @(
             '# Build artifacts',
             '',
             'Prebuilt dependencies produced by CI. Consumers download these so they',
             'need neither meson nor a GLib build of their own.',
             '',
-            '| Package | Version | Platform | Toolchain | Built (UTC) |',
-            '|---|---|---|---|---|'
+            '| Package | Version | Platform | Modules | Toolchain | Built (UTC) |',
+            '|---|---|---|---|---|---|'
           ) + $rows + @(
             '',
             '## How to consume',
