@@ -121,6 +121,21 @@ gcc -O1 -Wall -Wextra -o "$out_dir/mf-vcam-dyn.exe" "$repo_root/build/mingw/mf-v
 vcam_line=$("$out_dir/mf-vcam-dyn.exe" 2>/dev/null | grep '^VCAM_PROBE ' | tail -n1 || true)
 echo "probe line: ${vcam_line:-none}"
 
+# Independent check, straight off the filesystem: which system module contains
+# the export name at all? Dynamic resolution can only fail if the string is
+# genuinely absent, and this distinguishes "wrong module" from "not on this OS".
+echo '=== which system modules mention MFCreateVirtualCamera? ==='
+system32=${SYSTEMROOT:-C:\\Windows}/System32
+found_module=0
+for dll in "$system32"/mf*.dll "$system32"/windows.media*.dll; do
+	[ -f "$dll" ] || continue
+	if grep -qa 'MFCreateVirtualCamera' "$dll" 2>/dev/null; then
+		echo "ok   $(basename "$dll") contains the name"
+		found_module=1
+	fi
+done
+[ "$found_module" -eq 1 ] || echo 'no system module contains the name MFCreateVirtualCamera'
+
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 	{
 		echo ''

@@ -2,16 +2,16 @@
  * Windows 11 virtual camera: dynamic resolution probe.
  *
  * MinGW-w64's headers predate MFCreateVirtualCamera, so the API cannot be
- * linked against. It does not need to be: the OS exports it from mfplat.dll, so
- * LoadLibrary + GetProcAddress reaches it with declarations of our own. That
- * keeps the MinGW-only toolchain rule intact and degrades cleanly on Windows 10,
- * where the export is simply absent.
+ * linked against. It does not need to be: if the OS exports it, LoadLibrary +
+ * GetProcAddress reaches it with declarations of our own. That keeps the
+ * MinGW-only rule intact and degrades cleanly on Windows builds without the API.
  *
- * The value of this probe is that it CALLS the function. A plausible HRESULT -
- * E_ACCESSDENIED because a runner has no package identity - proves our
- * hand-written signature and enum values match the real ABI. A crash or a
- * nonsensical code would prove they do not, which is exactly the day of
- * debugging this is meant to avoid.
+ * The first run of this probe found the export missing from mfplat.dll on
+ * Windows build 26100, so the probe now scans every module that could plausibly
+ * own it and reports which one does. It then CALLS the function through our
+ * hand-written signature: a plausible HRESULT (E_ACCESSDENIED for an unpackaged
+ * caller) proves the signature and enum values match the real ABI, which is the
+ * expensive thing to discover later.
  *
  * Last line is machine readable so CI can forward it to the job summary.
  */
@@ -61,9 +61,8 @@ typedef HRESULT (WINAPI *MFCreateVirtualCameraFn)(
 	void *attributes,
 	IMFVirtualCamera **virtualCamera);
 
-typedef LONG (WINAPI *RtlGetVersionFn)(PRTL_OSVERSIONINFOW);
+typedef LONG (WINAPI *RtlGetVersionFn)(void *);
 
-/* Local copy of the structure, to avoid depending on winternl.h details. */
 typedef struct {
 	ULONG dwOSVersionInfoSize;
 	ULONG dwMajorVersion;
@@ -72,6 +71,20 @@ typedef struct {
 	ULONG dwPlatformId;
 	WCHAR szCSDVersion[128];
 } probe_osversioninfo;
+
+/* Every module that could plausibly own the virtual camera entry point. MF
+ * forwards a lot of its surface between mfplat, mfcore and mf, and Server SKUs
+ * omit some consumer media features entirely - which is what the first probe
+ * run suggested. */
+static const wchar_t *candidate_modules[] = {
+	L"mfplat.dll",
+	L"mfcore.dll",
+	L"mf.dll",
+	L"mfsensorgroup.dll",
+	L"mfreadwrite.dll",
+	L"mfmediaengine.dll",
+	L"windows.media.dll",
+};
 
 int main(void)
 {
@@ -84,32 +97,42 @@ int main(void)
 			probe_osversioninfo info;
 			ZeroMemory(&info, sizeof(info));
 			info.dwOSVersionInfoSize = sizeof(info);
-			if (rtl_get_version((PRTL_OSVERSIONINFOW)&info) == 0)
+			if (rtl_get_version(&info) == 0)
 				build = info.dwBuildNumber;
 		}
 	}
 	printf("Windows build: %lu%s\n", build, build >= 22621 ? " (11 22H2 or later)" : " (pre-22H2)");
 
-	HMODULE mfplat = LoadLibraryW(L"mfplat.dll");
-	printf("LoadLibraryW(\"mfplat.dll\"): %p\n", (void *)mfplat);
-	if (!mfplat) {
-		printf("VCAM_PROBE exported=0 hr=0x00000000 build=%lu\n", build);
-		return 0;
+	printf("scanning for the MFCreateVirtualCamera export:\n");
+	MFCreateVirtualCameraFn create = NULL;
+	const wchar_t *owner = NULL;
+	for (size_t i = 0; i < sizeof(candidate_modules) / sizeof(candidate_modules[0]); i++) {
+		HMODULE module = LoadLibraryW(candidate_modules[i]);
+		if (!module) {
+			printf("  %-22ls not present on this system\n", candidate_modules[i]);
+			continue;
+		}
+		FARPROC symbol = GetProcAddress(module, "MFCreateVirtualCamera");
+		if (symbol) {
+			printf("  %-22ls EXPORTS MFCreateVirtualCamera\n", candidate_modules[i]);
+			if (!create) {
+				create = (MFCreateVirtualCameraFn)(void *)symbol;
+				owner = candidate_modules[i];
+			}
+		} else {
+			printf("  %-22ls no such export\n", candidate_modules[i]);
+		}
 	}
 
-	MFCreateVirtualCameraFn create =
-		(MFCreateVirtualCameraFn)(void *)GetProcAddress(mfplat, "MFCreateVirtualCamera");
-	printf("GetProcAddress(\"MFCreateVirtualCamera\"): %p\n", (void *)create);
 	if (!create) {
-		printf("virtual camera API is not exported by this Windows build\n");
-		printf("VCAM_PROBE exported=0 hr=0x00000000 build=%lu\n", build);
-		FreeLibrary(mfplat);
+		printf("no module on this system exports MFCreateVirtualCamera\n");
+		printf("VCAM_PROBE exported=0 module=none hr=0x00000000 build=%lu\n", build);
 		return 0;
 	}
-	printf("virtual camera API is exported\n");
+	wprintf(L"using %ls\n", owner);
 
-	HRESULT hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
-	printf("CoInitializeEx: 0x%08lx\n", (unsigned long)hr);
+	HRESULT apartment = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+	printf("CoInitializeEx: 0x%08lx\n", (unsigned long)apartment);
 
 	IMFVirtualCamera *camera = NULL;
 	HRESULT created = create(MFVirtualCameraType_SoftwareCameraSource,
@@ -123,20 +146,19 @@ int main(void)
 	       (unsigned long)created);
 
 	if (created == E_ACCESSDENIED) {
-		printf("  E_ACCESSDENIED: the API answered, and the process has no package identity.\n");
-		printf("  That is the documented behaviour for an unpackaged caller, and it means\n");
-		printf("  our hand-written signature matches the real ABI.\n");
+		printf("  E_ACCESSDENIED: the API answered, and this process has no package identity.\n");
+		printf("  Documented behaviour for an unpackaged caller, and it means our signature\n");
+		printf("  and enum values match the real ABI.\n");
+	} else if (created == E_INVALIDARG) {
+		printf("  E_INVALIDARG: the call reached the API but was rejected - revisit the\n");
+		printf("  argument order and enum values before building on this.\n");
 	} else if (SUCCEEDED(created) && camera) {
 		printf("  virtual camera object created\n");
 		camera->lpVtbl->Release(camera);
-	} else if (created == E_INVALIDARG) {
-		printf("  E_INVALIDARG: the call reached the API but was rejected - inspect the\n");
-		printf("  argument order and enum values before building on this.\n");
 	}
 
 	CoUninitialize();
-	FreeLibrary(mfplat);
-
-	printf("VCAM_PROBE exported=1 hr=0x%08lx build=%lu\n", (unsigned long)created, build);
+	printf("VCAM_PROBE exported=1 module=present hr=0x%08lx build=%lu\n",
+	       (unsigned long)created, build);
 	return 0;
 }
