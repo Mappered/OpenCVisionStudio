@@ -763,6 +763,215 @@ static HRESULT vcam_source_create(IUnknown *outer, REFIID riid, void **out)
 }
 
 /* ------------------------------------------------------------------ */
+/* Activator                                                          */
+/* ------------------------------------------------------------------ */
+
+/* Media Foundation asks the CLSID for IMFActivate, not for the media source
+ * directly: the object is an *activator*, an IMFAttributes whose
+ * ActivateObject produces the source. That was established by tracing the frame
+ * server's QueryInterface calls - it asked for IID_IMFActivate and we answered
+ * E_NOINTERFACE, which surfaced as E_NOINTERFACE from
+ * IMFVirtualCamera::Start. */
+
+typedef struct VcamActivator {
+	const VcamActivatorVtbl *lpVtbl;
+	LONG refcount;
+	IMFAttributes *attributes;
+	VcamSource *source;
+} VcamActivator;
+
+/* The attribute methods are forwarded to a real IMFAttributes rather than
+ * reimplemented: the storage rules are not our business, only the identity. */
+#define ACTIVATOR_ATTR_FORWARD(name, decl, call) \
+	static HRESULT STDMETHODCALLTYPE activator_##name decl \
+	{ \
+		VcamActivator *self = (VcamActivator *)This; \
+		return IMFAttributes_##name call; \
+	}
+
+ACTIVATOR_ATTR_FORWARD(GetItem, (IMFAttributes *This, REFGUID key, PROPVARIANT *value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(GetItemType, (IMFAttributes *This, REFGUID key, MF_ATTRIBUTE_TYPE *type), (self->attributes, key, type))
+ACTIVATOR_ATTR_FORWARD(CompareItem, (IMFAttributes *This, REFGUID key, REFPROPVARIANT value, BOOL *result), (self->attributes, key, value, result))
+ACTIVATOR_ATTR_FORWARD(Compare, (IMFAttributes *This, IMFAttributes *theirs, MF_ATTRIBUTES_MATCH_TYPE match, BOOL *result), (self->attributes, theirs, match, result))
+ACTIVATOR_ATTR_FORWARD(GetUINT32, (IMFAttributes *This, REFGUID key, UINT32 *value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(GetUINT64, (IMFAttributes *This, REFGUID key, UINT64 *value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(GetDouble, (IMFAttributes *This, REFGUID key, double *value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(GetGUID, (IMFAttributes *This, REFGUID key, GUID *value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(GetStringLength, (IMFAttributes *This, REFGUID key, UINT32 *length), (self->attributes, key, length))
+ACTIVATOR_ATTR_FORWARD(GetString, (IMFAttributes *This, REFGUID key, LPWSTR value, UINT32 size, UINT32 *length), (self->attributes, key, value, size, length))
+ACTIVATOR_ATTR_FORWARD(GetAllocatedString, (IMFAttributes *This, REFGUID key, LPWSTR *value, UINT32 *length), (self->attributes, key, value, length))
+ACTIVATOR_ATTR_FORWARD(GetBlobSize, (IMFAttributes *This, REFGUID key, UINT32 *size), (self->attributes, key, size))
+ACTIVATOR_ATTR_FORWARD(GetBlob, (IMFAttributes *This, REFGUID key, UINT8 *buffer, UINT32 size, UINT32 *blob_size), (self->attributes, key, buffer, size, blob_size))
+ACTIVATOR_ATTR_FORWARD(GetAllocatedBlob, (IMFAttributes *This, REFGUID key, UINT8 **buffer, UINT32 *size), (self->attributes, key, buffer, size))
+ACTIVATOR_ATTR_FORWARD(GetUnknown, (IMFAttributes *This, REFGUID key, REFIID riid, LPVOID *value), (self->attributes, key, riid, value))
+ACTIVATOR_ATTR_FORWARD(SetItem, (IMFAttributes *This, REFGUID key, REFPROPVARIANT value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(DeleteItem, (IMFAttributes *This, REFGUID key), (self->attributes, key))
+ACTIVATOR_ATTR_FORWARD(DeleteAllItems, (IMFAttributes *This), (self->attributes))
+ACTIVATOR_ATTR_FORWARD(SetUINT32, (IMFAttributes *This, REFGUID key, UINT32 value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(SetUINT64, (IMFAttributes *This, REFGUID key, UINT64 value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(SetDouble, (IMFAttributes *This, REFGUID key, double value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(SetGUID, (IMFAttributes *This, REFGUID key, REFGUID value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(SetString, (IMFAttributes *This, REFGUID key, LPCWSTR value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(SetBlob, (IMFAttributes *This, REFGUID key, const UINT8 *buffer, UINT32 size), (self->attributes, key, buffer, size))
+ACTIVATOR_ATTR_FORWARD(SetUnknown, (IMFAttributes *This, REFGUID key, IUnknown *value), (self->attributes, key, value))
+ACTIVATOR_ATTR_FORWARD(LockStore, (IMFAttributes *This), (self->attributes))
+ACTIVATOR_ATTR_FORWARD(UnlockStore, (IMFAttributes *This), (self->attributes))
+ACTIVATOR_ATTR_FORWARD(GetCount, (IMFAttributes *This, UINT32 *count), (self->attributes, count))
+ACTIVATOR_ATTR_FORWARD(GetItemByIndex, (IMFAttributes *This, UINT32 index, GUID *key, PROPVARIANT *value), (self->attributes, index, key, value))
+ACTIVATOR_ATTR_FORWARD(CopyAllItems, (IMFAttributes *This, IMFAttributes *destination), (self->attributes, destination))
+
+static HRESULT vcam_activator_create(IUnknown *outer, REFIID riid, void **out);
+
+static HRESULT STDMETHODCALLTYPE activator_query_interface(IMFAttributes *This, REFIID riid, void **out)
+{
+	VcamActivator *self = (VcamActivator *)This;
+	HRESULT hr = E_NOINTERFACE;
+	if (!out)
+		return E_POINTER;
+	*out = NULL;
+	if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IMFAttributes) ||
+	    IsEqualIID(riid, &IID_IMFActivate)) {
+		*out = self;
+		InterlockedIncrement(&self->refcount);
+		hr = S_OK;
+	}
+	vcam_log_iid("activator QueryInterface", riid, hr);
+	return hr;
+}
+
+static ULONG STDMETHODCALLTYPE activator_add_ref(IMFAttributes *This)
+{
+	return (ULONG)InterlockedIncrement(&((VcamActivator *)This)->refcount);
+}
+
+static ULONG STDMETHODCALLTYPE activator_release(IMFAttributes *This)
+{
+	VcamActivator *self = (VcamActivator *)This;
+	LONG remaining = InterlockedDecrement(&self->refcount);
+	if (remaining == 0) {
+		if (self->source) {
+			source_shutdown((void *)self->source);
+			source_release((void *)self->source);
+		}
+		if (self->attributes)
+			IMFAttributes_Release(self->attributes);
+		free(self);
+		InterlockedDecrement(&g_object_count);
+	}
+	return (ULONG)remaining;
+}
+
+static HRESULT STDMETHODCALLTYPE activator_activate_object(void *This, REFIID riid, void **ppv)
+{
+	VcamActivator *self = (VcamActivator *)This;
+	HRESULT hr;
+
+	if (!ppv)
+		return E_POINTER;
+	*ppv = NULL;
+
+	vcam_log_iid("activator ActivateObject", riid, S_OK);
+
+	if (!self->source) {
+		IUnknown *unknown = NULL;
+		hr = vcam_source_create(NULL, &IID_IUnknown, (void **)&unknown);
+		if (FAILED(hr)) {
+			vcam_log("activator ActivateObject: creating the source failed 0x%08lx", (unsigned long)hr);
+			return hr;
+		}
+		/* vcam_source_create hands back an IUnknown; same object. */
+		self->source = (VcamSource *)unknown;
+	}
+
+	hr = source_query_interface(self->source, riid, ppv);
+	vcam_log("activator ActivateObject -> 0x%08lx", (unsigned long)hr);
+	return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE activator_shutdown_object(void *This)
+{
+	VcamActivator *self = (VcamActivator *)This;
+	vcam_log("activator ShutdownObject");
+	if (self->source)
+		source_shutdown((void *)self->source);
+	return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE activator_detach_object(void *This)
+{
+	(void)This;
+	vcam_log("activator DetachObject");
+	return S_OK;
+}
+
+static const VcamActivatorVtbl vcam_activator_vtbl = {
+	.attributes = {
+		.QueryInterface = activator_query_interface,
+		.AddRef = activator_add_ref,
+		.Release = activator_release,
+		.GetItem = activator_GetItem,
+		.GetItemType = activator_GetItemType,
+		.CompareItem = activator_CompareItem,
+		.Compare = activator_Compare,
+		.GetUINT32 = activator_GetUINT32,
+		.GetUINT64 = activator_GetUINT64,
+		.GetDouble = activator_GetDouble,
+		.GetGUID = activator_GetGUID,
+		.GetStringLength = activator_GetStringLength,
+		.GetString = activator_GetString,
+		.GetAllocatedString = activator_GetAllocatedString,
+		.GetBlobSize = activator_GetBlobSize,
+		.GetBlob = activator_GetBlob,
+		.GetAllocatedBlob = activator_GetAllocatedBlob,
+		.GetUnknown = activator_GetUnknown,
+		.SetItem = activator_SetItem,
+		.DeleteItem = activator_DeleteItem,
+		.DeleteAllItems = activator_DeleteAllItems,
+		.SetUINT32 = activator_SetUINT32,
+		.SetUINT64 = activator_SetUINT64,
+		.SetDouble = activator_SetDouble,
+		.SetGUID = activator_SetGUID,
+		.SetString = activator_SetString,
+		.SetBlob = activator_SetBlob,
+		.SetUnknown = activator_SetUnknown,
+		.LockStore = activator_LockStore,
+		.UnlockStore = activator_UnlockStore,
+		.GetCount = activator_GetCount,
+		.GetItemByIndex = activator_GetItemByIndex,
+		.CopyAllItems = activator_CopyAllItems,
+	},
+	.ActivateObject = activator_activate_object,
+	.ShutdownObject = activator_shutdown_object,
+	.DetachObject = activator_detach_object,
+};
+
+static HRESULT vcam_activator_create(IUnknown *outer, REFIID riid, void **out)
+{
+	VcamActivator *self;
+	HRESULT hr;
+
+	if (outer)
+		return CLASS_E_NOAGGREGATION;
+	self = (VcamActivator *)calloc(1, sizeof(VcamActivator));
+	if (!self)
+		return E_OUTOFMEMORY;
+	self->lpVtbl = &vcam_activator_vtbl;
+	self->refcount = 1;
+	hr = MFCreateAttributes(&self->attributes, 2);
+	if (FAILED(hr)) {
+		free(self);
+		return hr;
+	}
+	/* A friendly name is cheap and makes the object identifiable while
+	 * debugging; the real identity is the CLSID. */
+	IMFAttributes_SetString(self->attributes, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, VCAM_FRIENDLY_NAME);
+	InterlockedIncrement(&g_object_count);
+	hr = activator_query_interface((IMFAttributes *)self, riid, out);
+	activator_release((IMFAttributes *)self);
+	return hr;
+}
+
+/* ------------------------------------------------------------------ */
 /* Class factory                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -803,7 +1012,9 @@ static HRESULT STDMETHODCALLTYPE factory_create_instance(IClassFactory *This, IU
                                                          REFIID riid, void **out)
 {
 	(void)This;
-	return vcam_source_create(outer, riid, out);
+	/* The CLSID provides the activator, not the media source: that is what
+	 * Media Foundation asks for, and ActivateObject hands out the source. */
+	return vcam_activator_create(outer, riid, out);
 }
 
 static HRESULT STDMETHODCALLTYPE factory_lock_server(IClassFactory *This, BOOL lock)

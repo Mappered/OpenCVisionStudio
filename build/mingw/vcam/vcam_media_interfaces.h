@@ -61,4 +61,15 @@ typedef struct VcamMediaStreamVtbl {
 	HRESULT (STDMETHODCALLTYPE *RequestSample)(void *This, IUnknown *token);
 } VcamMediaStreamVtbl;
 
+/* The object the CLSID must provide is an activator: an IMFAttributes whose
+ * ActivateObject produces the media source. The frame server asks for
+ * IID_IMFActivate directly, which the trace of its QueryInterface calls showed.
+ * MinGW does declare IMFAttributesVtbl, so the inherited part is reused. */
+typedef struct VcamActivatorVtbl {
+	IMFAttributesVtbl attributes;
+	HRESULT (STDMETHODCALLTYPE *ActivateObject)(void *This, REFIID riid, void **ppv);
+	HRESULT (STDMETHODCALLTYPE *ShutdownObject)(void *This);
+	HRESULT (STDMETHODCALLTYPE *DetachObject)(void *This);
+} VcamActivatorVtbl;
+
 #endif /* VCAM_MEDIA_INTERFACES_H */
