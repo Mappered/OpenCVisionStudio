@@ -53,14 +53,36 @@ struct IMFVirtualCamera {
 	const IMFVirtualCameraVtbl *lpVtbl;
 };
 
+/* Exact prototype, taken from Microsoft's IDL rather than guessed:
+ *
+ *   STDAPI MFCreateVirtualCamera(
+ *       _In_ MFVirtualCameraType type,
+ *       _In_ MFVirtualCameraLifetime lifetime,
+ *       _In_ MFVirtualCameraAccess access,
+ *       _In_z_ LPCWSTR friendlyName,
+ *       _In_z_ LPCWSTR sourceId,
+ *       _In_reads_opt_(categoryCount) const GUID* categories,
+ *       _In_ ULONG categoryCount,
+ *       _COM_Outptr_ IMFVirtualCamera** virtualCamera);
+ *
+ * The first attempt at this probe used seven parameters with an attributes
+ * object where categories and categoryCount belong, so the function wrote
+ * through whatever was in the output slot and faulted. Eight, in this order.
+ */
 typedef HRESULT (WINAPI *MFCreateVirtualCameraFn)(
 	MFVirtualCameraType type,
 	MFVirtualCameraLifetime lifetime,
 	MFVirtualCameraAccess access,
 	LPCWSTR friendlyName,
 	LPCWSTR sourceId,
-	void *attributes,
+	const GUID *categories,
+	ULONG categoryCount,
 	IMFVirtualCamera **virtualCamera);
+
+/* The supported way to feature-detect. */
+typedef HRESULT (WINAPI *MFIsVirtualCameraTypeSupportedFn)(
+	MFVirtualCameraType type,
+	BOOL *supported);
 
 typedef LONG (WINAPI *RtlGetVersionFn)(void *);
 
@@ -174,6 +196,21 @@ int main(int argc, char **argv)
 	HRESULT apartment = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	printf("CoInitializeEx: 0x%08lx\n", (unsigned long)apartment);
 
+	HMODULE owner_module = LoadLibraryW(owner);
+	MFIsVirtualCameraTypeSupportedFn is_supported = NULL;
+	if (owner_module) {
+		is_supported = (MFIsVirtualCameraTypeSupportedFn)(void *)
+			GetProcAddress(owner_module, "MFIsVirtualCameraTypeSupported");
+	}
+	if (is_supported) {
+		BOOL supported = FALSE;
+		HRESULT supported_hr = is_supported(MFVirtualCameraType_SoftwareCameraSource, &supported);
+		printf("MFIsVirtualCameraTypeSupported(SoftwareCameraSource) = 0x%08lx, supported=%d\n",
+		       (unsigned long)supported_hr, (int)supported);
+	} else {
+		printf("MFIsVirtualCameraTypeSupported not resolvable - skipping the capability check\n");
+	}
+
 	IMFVirtualCamera *camera = NULL;
 	HRESULT created = create(MFVirtualCameraType_SoftwareCameraSource,
 	                         MFVirtualCameraLifetime_Session,
@@ -181,6 +218,7 @@ int main(int argc, char **argv)
 	                         L"OpenCVisionStudio Dynamic Probe",
 	                         L"{2a1b1f8e-6f5c-4b7a-9d3e-8f0c1d2e3f40}",
 	                         NULL,
+	                         0,
 	                         &camera);
 	printf("MFCreateVirtualCamera(SoftwareCameraSource, Session, CurrentUser) = 0x%08lx\n",
 	       (unsigned long)created);
