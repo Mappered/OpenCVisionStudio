@@ -89,11 +89,11 @@ static const char *iid_name(REFIID riid)
 	if (IsEqualIID(riid, &IID_IMFMediaEventGenerator)) return "IMFMediaEventGenerator";
 	if (IsEqualIID(riid, &IID_IMFAttributes)) return "IMFAttributes";
 	if (IsEqualIID(riid, &IID_IMFGetService)) return "IMFGetService";
-	if (IsEqualIID(riid, &IID_IMFMediaSourceEx)) return "IMFMediaSourceEx";
-	if (IsEqualIID(riid, &IID_IMFSampleAllocatorControl)) return "IMFSampleAllocatorControl";
-	if (IsEqualIID(riid, &IID_IMFRealTimeClient)) return "IMFRealTimeClient";
-	if (IsEqualIID(riid, &IID_IMFQualityAdvise)) return "IMFQualityAdvise";
 	if (IsEqualIID(riid, &IID_IMFShutdown)) return "IMFShutdown";
+	/* Several interfaces the frame server may ask for - IMFMediaSourceEx,
+	 * IMFSampleAllocatorControl, IMFRealTimeClient, IMFQualityAdvise - are not
+	 * declared in this toolchain's headers, so they fall through to "(other)"
+	 * and the logged GUID identifies them. */
 	return "(other)";
 }
 
