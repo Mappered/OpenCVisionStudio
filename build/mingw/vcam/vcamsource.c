@@ -27,7 +27,6 @@
 #include <mfidl.h>
 #include <mfobjects.h>
 #include <mferror.h>
-#include <ksmedia.h>   /* PINNAME_VIDEO_CAPTURE, the capture pin category */
 #include <stdio.h>
 #include <string.h>
 
@@ -67,6 +66,14 @@ static const GUID kMFDevicestreamFrameserverShared = {
 };
 static const GUID kMFDevicestreamFrameSourceTypes = {
 	0x17145FD1, 0x1B2B, 0x423C, { 0x80, 0x01, 0x2B, 0x68, 0x33, 0xED, 0x35, 0x88 }
+};
+
+/* {65E8773D-8F56-11D0-A3B9-00A0C9223196} - PINNAME_VIDEO_CAPTURE, the KS pin
+ * category that identifies a video capture stream. Declared by ksmedia.h, but
+ * its definition lives in a GUID library this build does not link, so the value
+ * is spelled out. */
+static const GUID kPinCategoryCapture = {
+	0x65E8773D, 0x8F56, 0x11D0, { 0xA3, 0xB9, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 }
 };
 
 static HMODULE g_module = NULL;
@@ -614,7 +621,7 @@ static HRESULT source_build_presentation(VcamSource *self)
 		 * pin category it does not treat the source as a camera at all, which
 		 * is why it refused the source before ever calling Start on it. */
 		IMFAttributes *stream_attributes = (IMFAttributes *)self->stream_descriptor;
-		IMFAttributes_SetGUID(stream_attributes, &kMFDevicestreamStreamCategory, &PINNAME_VIDEO_CAPTURE);
+		IMFAttributes_SetGUID(stream_attributes, &kMFDevicestreamStreamCategory, &kPinCategoryCapture);
 		IMFAttributes_SetUINT32(stream_attributes, &kMFDevicestreamStreamId, 0);
 		IMFAttributes_SetUINT32(stream_attributes, &kMFDevicestreamFrameserverShared, 1);
 		IMFAttributes_SetUINT32(stream_attributes, &kMFDevicestreamFrameSourceTypes, 1);
