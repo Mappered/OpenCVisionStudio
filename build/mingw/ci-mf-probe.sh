@@ -69,4 +69,46 @@ echo "linked $out_dir/mf-probe.exe"
 
 echo '=== run (a runner has no cameras; zero devices is success) ==='
 "$out_dir/mf-probe.exe"
+
+# ---------------------------------------------------------------------------
+# Windows 11 user-mode virtual camera API. Reported rather than enforced: an
+# older MinGW without the header is a fact to plan around, not a build failure.
+# ---------------------------------------------------------------------------
+echo '=== Windows 11 virtual camera API (MFCreateVirtualCamera) ==='
+vcam_header=0
+vcam_symbol=0
+if [ -f /mingw64/include/mfvirtualcamera.h ]; then
+	echo 'ok   mfvirtualcamera.h'
+	vcam_header=1
+else
+	echo 'MISS mfvirtualcamera.h - this MinGW predates the API'
+fi
+for library in /mingw64/lib/libmfplat.a /mingw64/lib/libmf.a; do
+	[ -f "$library" ] || continue
+	if nm -g --defined-only "$library" 2>/dev/null | grep -Eq '[ _]MFCreateVirtualCamera$'; then
+		echo "ok   MFCreateVirtualCamera in $(basename "$library")"
+		vcam_symbol=1
+	fi
+done
+[ "$vcam_symbol" -eq 1 ] || echo 'MISS MFCreateVirtualCamera in the import libraries'
+
+if [ "$vcam_header" -eq 1 ]; then
+	echo '=== build and run the virtual camera probe ==='
+	gcc -O1 -Wall -Wextra -o "$out_dir/mf-vcam-probe.exe" "$repo_root/build/mingw/mf-vcam-probe.c" \
+		-lmf -lmfplat -lmfuuid -lole32 -loleaut32 -luuid
+	"$out_dir/mf-vcam-probe.exe" || echo "warning: virtual camera probe exited non-zero" >&2
+else
+	echo 'skipping the virtual camera probe: the header is not available'
+fi
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+	{
+		echo ''
+		echo '### Media Foundation virtual camera'
+		echo ''
+		echo "- \`mfvirtualcamera.h\` in this MinGW: **$vcam_header**"
+		echo "- \`MFCreateVirtualCamera\` import symbol: **$vcam_symbol**"
+	} >> "$GITHUB_STEP_SUMMARY"
+fi
+
 echo 'Media Foundation probe passed'
