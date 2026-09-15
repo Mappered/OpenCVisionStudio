@@ -163,4 +163,32 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 	} >> "$GITHUB_STEP_SUMMARY"
 fi
 
+# ---------------------------------------------------------------------------
+# Does a created virtual camera become enumerable as a capture device? This is
+# the gate between holding an object and applications being able to see a
+# webcam, and it needs no camera and no GUI.
+# ---------------------------------------------------------------------------
+echo '=== virtual camera publish probe ==='
+gcc -O1 -Wall -Wextra -o "$out_dir/vcam-publish.exe" \
+	"$repo_root/build/mingw/vcam/vcam_publish_probe.c" \
+	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid
+"$out_dir/vcam-publish.exe" 2>&1 | tee "$out_dir/vcam-publish.log" || true
+pub_line=$(grep '^VCAM_PUBLISH ' "$out_dir/vcam-publish.log" | tail -n1 || true)
+echo "publish line: ${pub_line:-none}"
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+	{
+		echo ''
+		echo '### Virtual camera publish probe'
+		echo ''
+		echo '```'
+		echo "${pub_line:-VCAM_PUBLISH (no output)}"
+		echo '```'
+		echo ''
+		echo 'visible=1 means Media Foundation enumerated the virtual camera as a'
+		echo 'capture device after Start. A failing Start tells us the media source'
+		echo 'must be registered under that CLSID before the camera can come up.'
+	} >> "$GITHUB_STEP_SUMMARY"
+fi
+
 echo 'Media Foundation probe passed'
