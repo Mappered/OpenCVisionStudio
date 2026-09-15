@@ -749,9 +749,12 @@ static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 	vcam_log("source Pause (state=%lu)", (unsigned long)self->state);
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
-	/* A live source cannot be paused, and the documented way to say so is a
-	 * state-transition error rather than "invalid request". */
-	return MF_E_INVALID_STATE_TRANSITION;
+	/* Accept and ignore. Measured: the frame server calls Pause on the source
+	 * while bringing the camera up and propagates a failure straight out of
+	 * IMFVirtualCamera::Start - the error Start returned matched this function's
+	 * return code in two consecutive runs. A live source has nothing to pause,
+	 * so succeeding is both truthful and what the server requires here. */
+	return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
