@@ -183,7 +183,7 @@ echo "built $out_dir/vcamsource.dll"
 # Windows SKU's frame server will bring a software camera up.
 # ---------------------------------------------------------------------------
 echo '=== frame bus round trip ==='
-gcc -O1 -Wall -Wextra -static-libgcc -o "$out_dir/framebus-test.exe" \
+gcc -O1 -Wall -Wextra -static -static-libgcc -o "$out_dir/framebus-test.exe" \
 	"$vcam_dir/framebus.c" "$vcam_dir/framebus_test.c" -lole32
 echo "built $out_dir/framebus-test.exe"
 # Deliberately not swallowing the result: this test is the one thing in the
