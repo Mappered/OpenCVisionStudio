@@ -138,6 +138,25 @@ Three things the server will not accept, all measured:
   re-opens a camera with the same parameters, so the reader now calls `Remove`
   first and creates again; that was checked on the runner and changed nothing.
 
+The pipeline's own probes are now named rather than guessed at, because the
+source logs every one: as it brings a camera up it asks for **IMFMediaStream2**
+and **IKsControl** on the source, for `GetService(GUID_NULL, riid)` with two
+interfaces that appear in no public header, and for
+`PROPSETID_VIDCAP_CAMERACONTROL` / `KSPROPERTY_CAMERACONTROL_PRIVACY` as a GET.
+The stream now answers IMFMediaStream2 and IKsControl as well (the reference
+does), and the privacy property answers **FALSE** with four bytes instead of
+"no such property" - a source whose privacy state cannot be read is not the same
+as a source with no privacy switch. On the Server runner `Start` still returns
+MF_E_SHUTDOWN and the frame server service still never loads the media source, so
+none of those was the last piece there.
+
+Conclusion after all of it: the source now matches the working reference on
+every axis this project can observe - formats, attributes, interfaces, state
+transitions, property answers - and the data path is proven on a real Windows 11
+client, un-elevated. What has never run is the one combination that needs the
+machine owner: **Windows 11 client + elevated**, where the class can be
+registered machine-wide and the frame server service can be opened at all.
+
 What is left is one elevated run on a Windows 11 client, and it is an access
 question rather than a code question. The frame server CoCreates the media
 source *inside its own service process*, which cannot read HKCU, so the class
