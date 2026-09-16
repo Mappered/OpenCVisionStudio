@@ -1119,6 +1119,13 @@ static HRESULT STDMETHODCALLTYPE activator_activate_object(void *This, REFIID ri
 		/* vcam_source_create hands back an IUnknown; same object. */
 		self->source = (VcamSource *)unknown;
 		source_copy_activation_attributes(self->source, self->attributes);
+		/* Build the stream (and with it the presentation descriptor and media
+		 * types) now rather than lazily on Start. The working reference
+		 * implementation publishes its capability block to the media source
+		 * before the camera is created for exactly this reason: whichever part
+		 * of the pipeline activates the source can then find it complete. */
+		vcam_log("activator ActivateObject: building the stream -> 0x%08lx",
+		         (unsigned long)source_create_stream(self->source));
 	}
 
 	hr = source_query_interface(self->source, riid, ppv);
@@ -1302,8 +1309,10 @@ __declspec(dllexport) HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID ri
 	if (!IsEqualCLSID(clsid, &CLSID_VcamMediaSource))
 		return CLASS_E_CLASSNOTAVAILABLE;
 
-	/* Media Foundation may not be started in the hosting process yet. */
-	MFStartup(MF_VERSION, MFSTARTUP_LITE);
+	/* Media Foundation may not be started in the hosting process yet. Full
+	 * startup, like the reference implementation: the frame server clients are
+	 * part of the platform a lite startup does not bring up. */
+	MFStartup(MF_VERSION, MFSTARTUP_FULL);
 
 	vcam_log_iid("DllGetClassObject", riid, S_OK);
 

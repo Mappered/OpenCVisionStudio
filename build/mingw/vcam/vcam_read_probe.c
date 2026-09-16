@@ -23,6 +23,7 @@
 #include <mfobjects.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
@@ -93,6 +94,90 @@ static int framebus_selfcheck(void)
 /* Without a debugger, the faulting module and offset are the difference between
  * guessing and knowing. The frame server activates our CLSID inside this
  * process, so a fault here may be our media source or Windows' own code. */
+
+/* A faulting module on its own says little: the useful question is who called
+ * into it. A vectored handler runs before the stack unwinds, so the faulting
+ * thread's return addresses are still readable and can be resolved against the
+ * loaded modules - the closest thing to a stack trace without a debugger. */
+typedef struct {
+	void *base;
+	size_t size;
+	char name[MAX_PATH];
+} ModuleRange;
+
+static ModuleRange g_module_ranges[512];
+static int g_module_range_count = 0;
+
+static void snapshot_modules(void)
+{
+	HANDLE snapshot;
+	MODULEENTRY32W entry;
+
+	if (g_module_range_count)
+		return;
+	snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
+	                                    GetCurrentProcessId());
+	if (snapshot == INVALID_HANDLE_VALUE)
+		return;
+	entry.dwSize = sizeof(entry);
+	if (Module32FirstW(snapshot, &entry)) {
+		do {
+			ModuleRange *range;
+			if (g_module_range_count >= (int)(sizeof(g_module_ranges) / sizeof(g_module_ranges[0])))
+				break;
+			range = &g_module_ranges[g_module_range_count];
+			if (!WideCharToMultiByte(CP_ACP, 0, entry.szModule, -1, range->name, MAX_PATH,
+			                         NULL, NULL))
+				continue;
+			range->base = entry.modBaseAddr;
+			range->size = entry.modBaseSize;
+			g_module_range_count++;
+		} while (Module32NextW(snapshot, &entry));
+	}
+	CloseHandle(snapshot);
+}
+
+static void describe_address(const char *prefix, void *address)
+{
+	int i;
+
+	snapshot_modules();
+	for (i = 0; i < g_module_range_count; i++) {
+		const ModuleRange *range = &g_module_ranges[i];
+		const unsigned char *base = (const unsigned char *)range->base;
+		if ((const unsigned char *)address >= base &&
+		    (const unsigned char *)address < base + range->size) {
+			printf("%s%p %s+0x%llx\n", prefix, address, range->name,
+			       (unsigned long long)((const unsigned char *)address - base));
+			return;
+		}
+	}
+	printf("%s%p (not in a loaded module)\n", prefix, address);
+}
+
+static LONG WINAPI stack_trace_handler(EXCEPTION_POINTERS *info)
+{
+	void *frames[24];
+	USHORT count;
+	USHORT i;
+
+	if (!info || !info->ExceptionRecord)
+		return EXCEPTION_CONTINUE_SEARCH;
+	if (info->ExceptionRecord->ExceptionCode != EXCEPTION_ACCESS_VIOLATION &&
+	    info->ExceptionRecord->ExceptionCode != EXCEPTION_ILLEGAL_INSTRUCTION &&
+	    info->ExceptionRecord->ExceptionCode != EXCEPTION_PRIV_INSTRUCTION &&
+	    info->ExceptionRecord->ExceptionCode != EXCEPTION_STACK_OVERFLOW)
+		return EXCEPTION_CONTINUE_SEARCH;
+
+	printf("STACK thread=%lu innermost first\n", (unsigned long)GetCurrentThreadId());
+	count = RtlCaptureStackBackTrace(0, (DWORD)(sizeof(frames) / sizeof(frames[0])),
+	                                 frames, NULL);
+	for (i = 0; i < count; i++)
+		describe_address("  frame ", frames[i]);
+	fflush(stdout);
+	return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static LONG WINAPI crash_handler(EXCEPTION_POINTERS *info)
 {
 	HMODULE module = NULL;
@@ -110,6 +195,7 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *info)
 		fprintf(stderr, "CRASH code=0x%08lx address=%p module=",
 		        (unsigned long)info->ExceptionRecord->ExceptionCode, address);
 		fwprintf(stderr, L"%ls\n", module_path);
+		fprintf(stderr, "CRASH thread=%lu\n", (unsigned long)GetCurrentThreadId());
 		if (info->ExceptionRecord->NumberParameters >= 2) {
 			fprintf(stderr, "CRASH access=%p\n",
 			        (void *)info->ExceptionRecord->ExceptionInformation[1]);
@@ -143,11 +229,16 @@ int main(void)
 	setvbuf(stdout, NULL, _IONBF, 0);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	SetUnhandledExceptionFilter(crash_handler);
+	AddVectoredExceptionHandler(1, stack_trace_handler);
 
 	hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
 	printf("CoInitializeEx: 0x%08lx\n", (unsigned long)hr);
-	hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
-	printf("MFStartup: 0x%08lx\n", (unsigned long)hr);
+	/* Full startup, not MFSTARTUP_LITE: the virtual camera's activation runs
+	 * through the frame server clients, and the reference implementation that
+	 * works uses the full platform. The flags are printed because a fault after
+	 * a lite startup would look exactly like a fault after a full one. */
+	hr = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+	printf("MFStartup: 0x%08lx (flags=MFSTARTUP_FULL)\n", (unsigned long)hr);
 	if (FAILED(hr)) {
 		printf("VCAM_READ devices=0 found=0 sample_bytes=0\n");
 		return 1;
