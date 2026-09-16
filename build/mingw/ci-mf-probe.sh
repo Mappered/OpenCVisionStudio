@@ -183,9 +183,16 @@ echo "built $out_dir/vcamsource.dll"
 # Windows SKU's frame server will bring a software camera up.
 # ---------------------------------------------------------------------------
 echo '=== frame bus round trip ==='
-gcc -O1 -Wall -Wextra -o "$out_dir/framebus-test.exe" \
+gcc -O1 -Wall -Wextra -static-libgcc -o "$out_dir/framebus-test.exe" \
 	"$vcam_dir/framebus.c" "$vcam_dir/framebus_test.c" -lole32
-"$out_dir/framebus-test.exe" 2>&1 | tee "$out_dir/framebus-test.log" || true
+echo "built $out_dir/framebus-test.exe"
+# Deliberately not swallowing the result: this test is the one thing in the
+# pipeline CI can prove outright, so its exit code has to be visible.
+set +e
+"$out_dir/framebus-test.exe" 2>&1 | tee "$out_dir/framebus-test.log"
+framebus_exit=$?
+set -e
+echo "framebus-test exit=$framebus_exit"
 framebus_line=$(grep '^FRAMEBUS ' "$out_dir/framebus-test.log" | tail -n1 || true)
 echo "framebus line: ${framebus_line:-none}"
 
