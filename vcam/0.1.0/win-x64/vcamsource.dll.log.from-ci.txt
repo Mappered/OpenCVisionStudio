@@ -1,4 +1,4 @@
---- media source loaded in pid 5084 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-read.exe), thread 784 ---
+--- media source loaded in pid 10204 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-read.exe), thread 4596 ---
 DllGetClassObject IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
 factory QueryInterface IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
 activator QueryInterface (other) {7fee9e9a-4a89-47a6-899c-b6a53a70fb67} -> 0x00000000
@@ -35,5 +35,34 @@ source KsProperty -> ERROR_SET_NOT_FOUND
 source Shutdown
 source Shutdown -> S_OK
 source QueryInterface IMFMediaSource {279a808d-aec7-40c8-9c6b-a6b492c78a66} -> 0x00000000
+source Shutdown
+source Shutdown -> MF_E_SHUTDOWN (was already shut down)
+--- media source loaded in pid 6672 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-sourcedrive.exe), thread 864 ---
+DllGetClassObject IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
+factory QueryInterface IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
+activator QueryInterface (other) {7fee9e9a-4a89-47a6-899c-b6a53a70fb67} -> 0x00000000
+activator QueryInterface (other) {7fee9e9a-4a89-47a6-899c-b6a53a70fb67} -> 0x00000000
+activator ActivateObject IMFMediaSource {279a808d-aec7-40c8-9c6b-a6b492c78a66} -> 0x00000000
+source QueryInterface IUnknown {00000000-0000-0000-c000-000000000046} -> 0x00000000
+source activation attributes copied
+activator ActivateObject: building the stream -> 0x00000000
+source QueryInterface IMFMediaSource {279a808d-aec7-40c8-9c6b-a6b492c78a66} -> 0x00000000
+activator ActivateObject -> 0x00000000
+source CreatePresentationDescriptor -> 0x00000000 (640x480 RGB32)
+source Start (state=1)
+source Start -> 0x00000000
+source QueryInterface IMFMediaEventGenerator {2cd0bd52-bcd5-4b89-b62c-eadc0c031e7d} -> 0x00000000
+source GetEvent -> 0x00000000
+stream QueryInterface IMFMediaStream {d182108f-4ec6-443f-aa42-a71106ec825f} -> 0x00000000
+stream RequestSample (#0)
+stream: frame bus attached (real frames)
+stream GetEvent -> 0x00000000
+stream RequestSample (#102)
+stream GetEvent -> 0x00000000
+stream RequestSample (#103)
+stream GetEvent -> 0x00000000
+source Stop (state=2)
+source Shutdown
+source Shutdown -> S_OK
 source Shutdown
 source Shutdown -> MF_E_SHUTDOWN (was already shut down)
