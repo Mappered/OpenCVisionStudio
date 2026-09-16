@@ -498,7 +498,7 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 	 * RGB32 either way. Read it per sample, so a consumer that renegotiates
 	 * mid-session is answered in the format it asked for. */
 	subtype = stream_current_subtype(self);
-	frame_bytes = (subtype == MFVideoFormat_YUY2)
+	frame_bytes = IsEqualIID(&subtype, &MFVideoFormat_YUY2)
 	              ? VCAM_FRAME_WIDTH * VCAM_FRAME_HEIGHT * 2u
 	              : VCAM_FRAME_BYTES;
 
@@ -535,7 +535,7 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 		IMFMediaBuffer_Release(buffer);
 		return hr;
 	}
-	if (subtype == MFVideoFormat_YUY2)
+	if (IsEqualIID(&subtype, &MFVideoFormat_YUY2))
 		vcam_rgb32_to_yuy2(self->rgb32_frame, pixels, VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
 	else
 		memcpy(pixels, self->rgb32_frame, frame_bytes);

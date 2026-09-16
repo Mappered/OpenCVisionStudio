@@ -164,15 +164,15 @@ int main(int argc, char **argv)
 	IMFMediaType_GetUINT64(media_type, &MF_MT_FRAME_SIZE, &frame_size);
 	/* What a sample has to be follows from the negotiated subtype, not from
 	 * what the bus carries. */
-	if (subtype == MFVideoFormat_YUY2)
+	if (IsEqualIID(&subtype, &MFVideoFormat_YUY2))
 		expected_bytes = VCAM_FRAME_WIDTH * VCAM_FRAME_HEIGHT * 2u;
-	else if (subtype == MFVideoFormat_RGB32)
+	else if (IsEqualIID(&subtype, &MFVideoFormat_RGB32))
 		expected_bytes = VCAM_FRAME_BYTES;
 	printf("media type: %lux%lu subtype=%s sample_bytes=%u\n",
 	       (unsigned long)(frame_size >> 32), (unsigned long)(frame_size & 0xFFFFFFFFu),
-	       subtype == MFVideoFormat_YUY2 ? "YUY2" :
-	       subtype == MFVideoFormat_RGB32 ? "RGB32" :
-	       subtype == MFVideoFormat_NV12 ? "NV12" : "other",
+	       IsEqualIID(&subtype, &MFVideoFormat_YUY2) ? "YUY2" :
+	       IsEqualIID(&subtype, &MFVideoFormat_RGB32) ? "RGB32" :
+	       IsEqualIID(&subtype, &MFVideoFormat_NV12) ? "NV12" : "other",
 	       expected_bytes);
 
 	PropVariantInit(&start);
@@ -260,7 +260,7 @@ int main(int argc, char **argv)
 	 * conversion the source used - the newest published frame is index 2, which
 	 * is the one a live stream delivers. */
 	if (ok && self_publish) {
-		if (subtype == MFVideoFormat_YUY2) {
+		if (IsEqualIID(&subtype, &MFVideoFormat_YUY2)) {
 			unsigned char y, u, v;
 			vcam_rgb_to_yuv(MARK_R + 2u, MARK_G, MARK_B, &y, &u, &v);
 			ok = first_pixel[0] == y && first_pixel[2] == y &&
