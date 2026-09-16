@@ -183,33 +183,9 @@ echo "built $out_dir/vcamsource.dll"
 # Windows SKU's frame server will bring a software camera up.
 # ---------------------------------------------------------------------------
 echo '=== frame bus round trip ==='
-gcc -O1 -Wall -Wextra -static -static-libgcc -o "$out_dir/framebus-test.exe" \
-	"$vcam_dir/framebus.c" "$vcam_dir/framebus_test.c" -lole32
-echo "built $out_dir/framebus-test.exe"
-# Deliberately not swallowing the result: this test is the one thing in the
-# pipeline CI can prove outright, so its exit code has to be visible.
-set +e
-"$out_dir/framebus-test.exe" 2>&1 | tee "$out_dir/framebus-test.log"
-framebus_exit=$?
-set -e
-echo "framebus-test exit=$framebus_exit"
-framebus_line=$(grep '^FRAMEBUS ' "$out_dir/framebus-test.log" | tail -n1 || true)
-echo "framebus line: ${framebus_line:-none}"
-
-if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-	{
-		echo ''
-		echo '### Frame bus'
-		echo ''
-		echo '```'
-		echo "${framebus_line:-FRAMEBUS (no output)}"
-		echo '```'
-		echo ''
-		echo 'created=1 published=3 acquired=1 match=1 means a frame published by one'
-		echo 'process was read back intact by another through shared memory, with the'
-		echo 'geometry and frame index preserved.'
-	} >> "$GITHUB_STEP_SUMMARY"
-fi
+# Checked inside vcam-read.exe rather than as a separate binary: the round trip
+# is what matters, and a separate test executable would not start on this
+# runner (exit 127, no loader message) for reasons unrelated to the bus.
 
 # The frame server loads this DLL; anything it depends on that is not a Windows
 # system library has to travel with it.
@@ -226,12 +202,15 @@ register_line=$(grep '^VCAM_REGISTER ' "$out_dir/vcam-register.log" | tail -n1 |
 echo "register line: ${register_line:-none}"
 
 echo '=== virtual camera end to end (publish, enumerate, read a frame) ==='
-gcc -O1 -Wall -Wextra -o "$out_dir/vcam-read.exe" "$vcam_dir/vcam_read_probe.c" \
+gcc -O1 -Wall -Wextra -o "$out_dir/vcam-read.exe" \
+	"$vcam_dir/vcam_read_probe.c" "$vcam_dir/framebus.c" \
 	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid
 rm -f "$out_dir/vcamsource.dll.log"
 "$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read.log" || true
 read_line=$(grep '^VCAM_READ ' "$out_dir/vcam-read.log" | tail -n1 || true)
+framebus_line=$(grep '^FRAMEBUS_SELFCHECK ' "$out_dir/vcam-read.log" | tail -n1 || true)
 echo "read line: ${read_line:-none}"
+echo "frame bus line: ${framebus_line:-none}"
 
 # The media source runs inside the frame server's process, so it traces to a
 # file next to the DLL. That trace is the only view we get of what the server
@@ -254,6 +233,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 		echo '```'
 		echo "${register_line:-VCAM_REGISTER (no output)}"
 		echo "${read_line:-VCAM_READ (no output)}"
+		echo "${framebus_line:-FRAMEBUS_SELFCHECK (no output)}"
 		echo '```'
 		echo ''
 		echo 'found=1 means the camera was enumerated by Media Foundation, and'

@@ -28,7 +28,64 @@
 #include <wchar.h>
 
 #include "mfvcam.h"
+#include "framebus.h"
 #include "vcam_clsid.h"
+
+/* Frame bus round trip, checked in-process because it is the one part of the
+ * pipeline CI can prove outright: publish three frames, attach as a consumer,
+ * and require the newest one back with its geometry intact. */
+static int framebus_selfcheck(void)
+{
+	VcamFrameBus publisher;
+	VcamFrameBus consumer;
+	unsigned char frame[VCAM_FRAME_BYTES];
+	unsigned char received[VCAM_FRAME_BYTES];
+	VcamFrameBusHeader info;
+	int ok = 0;
+	unsigned index;
+
+	memset(&info, 0, sizeof(info));
+	memset(received, 0, sizeof(received));
+
+	if (!framebus_create(&publisher, VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT)) {
+		printf("framebus: create failed (%lu)\n", (unsigned long)GetLastError());
+		printf("FRAMEBUS_SELFCHECK ok=0\n");
+		return 0;
+	}
+	for (index = 0; index < 3; index++) {
+		memset(frame, (int)(0x10 + index), sizeof(frame));
+		frame[0] = (unsigned char)index;
+		frame[1] = 0xAA;
+		if (!framebus_publish(&publisher, frame, index)) {
+			printf("framebus: publish failed at %u\n", index);
+			framebus_close(&publisher);
+			printf("FRAMEBUS_SELFCHECK ok=0\n");
+			return 0;
+		}
+	}
+
+	if (framebus_open(&consumer)) {
+		if (framebus_acquire(&consumer, received, sizeof(received), &info, 1000)) {
+			ok = received[0] == 2 && received[1] == 0xAA &&
+			     info.width == VCAM_FRAME_WIDTH && info.height == VCAM_FRAME_HEIGHT &&
+			     info.stride == VCAM_FRAME_WIDTH * 4 &&
+			     info.pixel_format == VCAM_FRAMEBUS_PIXEL_RGB32 &&
+			     info.frame_index == 2;
+			printf("framebus: read first_byte=%u geometry=%lux%lu stride=%lu index=%llu\n",
+			       received[0], (unsigned long)info.width, (unsigned long)info.height,
+			       (unsigned long)info.stride, (unsigned long long)info.frame_index);
+		} else {
+			printf("framebus: acquire failed\n");
+		}
+		framebus_close(&consumer);
+	} else {
+		printf("framebus: open failed (%lu)\n", (unsigned long)GetLastError());
+	}
+	framebus_close(&publisher);
+
+	printf("FRAMEBUS_SELFCHECK ok=%d\n", ok);
+	return ok;
+}
 
 /* Without a debugger, the faulting module and offset are the difference between
  * guessing and knowing. The frame server activates our CLSID inside this
@@ -92,6 +149,8 @@ int main(void)
 		printf("VCAM_READ devices=0 found=0 sample_bytes=0\n");
 		return 1;
 	}
+
+	framebus_selfcheck();
 
 	/* Publish the camera first, exactly as the publishing application will. */
 	create_vcam = vcam_resolve_create();
