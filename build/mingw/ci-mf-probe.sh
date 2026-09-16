@@ -421,6 +421,14 @@ if [ -f "$sdk/bin/arv-fake-gv-camera-0.10.exe" ] && [ -f "$out_dir/vcam-publishe
 	echo "live read line: ${live_read_line:-none}"
 	echo "media source bus line: ${bus_line:-none}"
 	echo "publisher line: ${live_publisher_line:-none}"
+	# Which processes loaded the media source, and how far each got, is the whole
+	# question at this point, so the trace is printed in full.
+	echo '--- media source trace (live) ---'
+	if [ -f "$out_dir/vcamsource.dll.log" ]; then
+		cat "$out_dir/vcamsource.dll.log"
+	else
+		echo '(no trace)'
+	fi
 
 	if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 		{

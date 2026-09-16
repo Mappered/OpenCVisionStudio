@@ -925,6 +925,13 @@ static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
 {
 	VcamSource *self = (VcamSource *)This;
 	vcam_log("source Shutdown");
+	if (self->state == 4) {
+		/* Media Foundation's convention, and what the reference implementation
+		 * does: the second Shutdown is an error, not a no-op. Returning S_OK
+		 * here hides how many times the pipeline really shut the object down. */
+		vcam_log("source Shutdown -> MF_E_SHUTDOWN (was already shut down)");
+		return MF_E_SHUTDOWN;
+	}
 	self->state = 4;
 	if (self->stream) {
 		self->stream->state = 4;
@@ -1216,15 +1223,28 @@ static HRESULT STDMETHODCALLTYPE activator_shutdown_object(void *This)
 {
 	VcamActivator *self = (VcamActivator *)This;
 	vcam_log("activator ShutdownObject");
-	if (self->source)
+	/* Shut the source down *and forget it*. Measured: the pipeline activates a
+	 * source, probes it, shuts it down, and then needs one again - and an
+	 * activator that hands back the object it just shut down makes the next
+	 * Start return MF_E_SHUTDOWN, which is what the trace showed. */
+	if (self->source) {
 		source_shutdown((void *)self->source);
+		source_release((void *)self->source);
+		self->source = NULL;
+	}
 	return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE activator_detach_object(void *This)
 {
-	(void)This;
+	VcamActivator *self = (VcamActivator *)This;
 	vcam_log("activator DetachObject");
+	/* Detach, unlike ShutdownObject, means "let go without shutting down": the
+	 * next ActivateObject is expected to build a fresh source. */
+	if (self->source) {
+		source_release((void *)self->source);
+		self->source = NULL;
+	}
 	return S_OK;
 }
 
