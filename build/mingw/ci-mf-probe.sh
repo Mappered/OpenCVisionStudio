@@ -216,8 +216,11 @@ gcc -O1 -Wall -Wextra -DVCAM_WITH_ARAVIS -o "$out_dir/vcam-publisher.exe" \
 	-lxml2 -lusb-1.0 -lz -lws2_32 -liphlpapi
 echo "built $out_dir/vcam-publisher.exe"
 
-# The publisher's DLLs come from the package; the fake camera tool is in its bin.
-export PATH="$sdk/bin:$PATH"
+# Next to the executables, so the loader finds them: the package's DLLs and
+# MSYS2's glib are the same MinGW build, but only the ones in the executable's
+# own directory are guaranteed to match what it linked against.
+cp -f "$sdk"/bin/*.dll "$out_dir/" 2>/dev/null || true
+echo "copied $(ls "$out_dir"/*.dll | wc -l) DLLs next to the executables"
 
 echo '--- synthetic publish in one process, verify in another ---'
 "$out_dir/vcam-publisher.exe" --synthetic --frames 3 --hold 8000 2>&1 | tee "$out_dir/publisher-synthetic.log" &
@@ -234,8 +237,10 @@ echo '--- Aravis: devices before the fake camera ---'
 "$out_dir/vcam-publisher.exe" --list 2>&1 | tee "$out_dir/publisher-list-before.log" || true
 
 echo '--- Aravis fake GigE Vision camera ---'
-fake_tool=$(command -v arv-fake-gv-camera-0.10.exe || true)
-if [ -n "$fake_tool" ]; then
+fake_tool="$sdk/bin/arv-fake-gv-camera-0.10.exe"
+# A file test, not `command -v`: unzip does not set an execute bit, so the
+# shell cannot tell the extracted tool is runnable.
+if [ -f "$fake_tool" ]; then
 	"$fake_tool" 2>&1 | tee "$out_dir/fake-camera.log" &
 	fake_pid=$!
 	sleep 5
