@@ -1,4 +1,4 @@
---- media source loaded in pid 6524 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-read.exe), thread 6764 ---
+--- media source loaded in pid 7244 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-read.exe), thread 2940 ---
 DllGetClassObject riid=IClassFactory {00000001-0000-0000} -> 0x00000000
 factory QueryInterface riid=IClassFactory {00000001-0000-0000} -> 0x00000000
 activator QueryInterface riid=(other) {7fee9e9a-4a89-47a6} -> 0x00000000
@@ -8,6 +8,7 @@ activator GetUINT32 key={f0273718-4a4d-4ac5} -> 0x00000000
 activator ActivateObject riid=IMFMediaSourceEx {3c9b2eb9-86d5-4514} -> 0x00000000
 source QueryInterface riid=IUnknown {00000000-0000-0000} -> 0x00000000
 source activation attributes copied
+activator ActivateObject: building the stream -> 0x00000000
 source QueryInterface riid=IMFMediaSourceEx {3c9b2eb9-86d5-4514} -> 0x00000000
 activator ActivateObject -> 0x00000000
 source QueryInterface riid=IUnknown {00000000-0000-0000} -> 0x00000000
