@@ -100,6 +100,25 @@ typedef struct VcamStream VcamStream;
  * we learn which interfaces it asks for. */
 static FILE *g_log = NULL;
 
+/* Which process hosts the media source is not a detail: the frame server can
+ * load it in its own service process or have it activated inside the caller,
+ * and that decides whether our environment, our view of the shared frame bus
+ * and our trace are the ones in play. Every trace starts by saying. */
+static const char *host_process_name(void)
+{
+	static char name[MAX_PATH] = "";
+	wchar_t wide[MAX_PATH];
+	DWORD length;
+
+	if (name[0])
+		return name;
+	length = GetModuleFileNameW(NULL, wide, MAX_PATH);
+	if (length == 0 || length >= MAX_PATH ||
+	    !WideCharToMultiByte(CP_ACP, 0, wide, -1, name, MAX_PATH, NULL, NULL))
+		strcpy(name, "(unknown)");
+	return name;
+}
+
 static void vcam_log_open(void)
 {
 	wchar_t path[MAX_PATH];
@@ -118,6 +137,13 @@ static void vcam_log_open(void)
 		wcscat(path, L".log");
 	}
 	g_log = _wfopen(path, L"a");
+	if (g_log) {
+		fprintf(g_log, "--- media source loaded in pid %lu (%s), thread %lu ---",
+		        (unsigned long)GetCurrentProcessId(), host_process_name(),
+		        (unsigned long)GetCurrentThreadId());
+		fputc('\n', g_log);
+		fflush(g_log);
+	}
 }
 
 static const char *iid_name(REFIID riid)
@@ -212,6 +238,8 @@ static HRESULT plumbing_get_event(EventPlumbing *p, DWORD flags, IMFMediaEvent *
 {
 	if (*p->state == 4)
 		return MF_E_SHUTDOWN;
+	if (!p->queue)
+		return E_UNEXPECTED;
 	return IMFMediaEventQueue_GetEvent(p->queue, flags, event);
 }
 
@@ -219,6 +247,8 @@ static HRESULT plumbing_begin_get_event(EventPlumbing *p, IMFAsyncCallback *call
 {
 	if (*p->state == 4)
 		return MF_E_SHUTDOWN;
+	if (!p->queue)
+		return E_UNEXPECTED;
 	return IMFMediaEventQueue_BeginGetEvent(p->queue, callback, state);
 }
 
@@ -226,6 +256,8 @@ static HRESULT plumbing_end_get_event(EventPlumbing *p, IMFAsyncResult *result, 
 {
 	if (*p->state == 4)
 		return MF_E_SHUTDOWN;
+	if (!p->queue)
+		return E_UNEXPECTED;
 	return IMFMediaEventQueue_EndGetEvent(p->queue, result, event);
 }
 
@@ -240,6 +272,8 @@ static HRESULT plumbing_queue_event(EventPlumbing *p, MediaEventType type, REFGU
 
 	if (*p->state == 4)
 		return MF_E_SHUTDOWN;
+	if (!p->queue)
+		return E_UNEXPECTED;
 	if (event) {
 		IMFMediaEvent_AddRef(event);
 		constructed = event;
@@ -258,6 +292,8 @@ static HRESULT plumbing_queue_param_var(EventPlumbing *p, MediaEventType type, R
 {
 	if (*p->state == 4)
 		return MF_E_SHUTDOWN;
+	if (!p->queue)
+		return E_UNEXPECTED;
 	return IMFMediaEventQueue_QueueEventParamVar(p->queue, type, extended_type, status, value);
 }
 
@@ -266,6 +302,8 @@ static HRESULT plumbing_queue_param_unk(EventPlumbing *p, MediaEventType type, R
 {
 	if (*p->state == 4)
 		return MF_E_SHUTDOWN;
+	if (!p->queue)
+		return E_UNEXPECTED;
 	return IMFMediaEventQueue_QueueEventParamUnk(p->queue, type, extended_type, status, value);
 }
 
@@ -767,7 +805,9 @@ static HRESULT STDMETHODCALLTYPE source_stop(void *This)
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
 	if (self->state == 1)
-		return MF_E_INVALIDREQUEST;
+		/* Already stopped, and Stop is idempotent in Media Foundation: there is
+		 * no transition to make and no second MESourceStopped to raise. */
+		return S_OK;
 	self->state = 1;
 	p.queue = self->queue;
 	p.state = &self->state;
@@ -781,19 +821,27 @@ static HRESULT STDMETHODCALLTYPE source_stop(void *This)
 static HRESULT STDMETHODCALLTYPE source_pause(void *This)
 {
 	VcamSource *self = (VcamSource *)This;
+	EventPlumbing p;
+
 	vcam_log("source Pause (state=%lu)", (unsigned long)self->state);
 	if (self->state == 4)
 		return MF_E_SHUTDOWN;
-	/* Accept and ignore. Measured: the frame server calls Pause on the source
-	 * while bringing the camera up and propagates a failure straight out of
-	 * IMFVirtualCamera::Start - the error Start returned matched this function's
-	 * return code in two consecutive runs. A live source has nothing to pause,
-	 * so succeeding is both truthful and what the server requires here. */
-	/* The documented answer for a live source. Measured with a distinctive code
-	 * (E_NOTIMPL) that IMFVirtualCamera::Start echoes whatever this returns, so
-	 * the value matters: this is the one the frame server expects. */
-	vcam_log("source Pause -> MF_E_INVALID_STATE_TRANSITION");
-	return MF_E_INVALID_STATE_TRANSITION;
+
+	/* Measured on a Windows 11 client: the frame server calls Pause on the
+	 * source while bringing the camera up, on a source that has never been
+	 * started, and IMFVirtualCamera::Start returns whatever this returns - the
+	 * earlier run failed with Start = MF_E_INVALID_STATE_TRANSITION, which is
+	 * exactly what this function used to answer. A capture source is live and
+	 * has nothing to halt, so the transition is accepted and recorded. */
+	p.queue = self->queue;
+	p.state = &self->state;
+	if (self->stream) {
+		self->stream->state = 3;
+		plumbing_queue_event(&p, MEStreamPaused, kNullGuid, S_OK, NULL);
+	}
+	self->state = 3;
+	vcam_log("source Pause -> S_OK (paused)");
+	return plumbing_queue_event(&p, MESourcePaused, kNullGuid, S_OK, NULL);
 }
 
 static HRESULT STDMETHODCALLTYPE source_shutdown(void *This)
