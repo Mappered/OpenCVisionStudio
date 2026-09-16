@@ -45,9 +45,12 @@ static void fill_marked(unsigned char *pixels, unsigned long long index)
 	size_t count = (size_t)VCAM_FRAME_WIDTH * VCAM_FRAME_HEIGHT;
 
 	for (i = 0; i < count; i++) {
-		pixels[i * 4 + 0] = (unsigned char)(MARK_R + (index & 0xFF));
+		/* RGB32 is BGRA in memory, which is the order the source converts
+		 * from; writing the mark in RGB order here would make the check agree
+		 * with itself and disagree with the pixels. */
+		pixels[i * 4 + 0] = MARK_B;
 		pixels[i * 4 + 1] = MARK_G;
-		pixels[i * 4 + 2] = MARK_B;
+		pixels[i * 4 + 2] = (unsigned char)(MARK_R + (index & 0xFF));
 		pixels[i * 4 + 3] = 0xFF;
 	}
 }
@@ -266,8 +269,8 @@ int main(int argc, char **argv)
 			ok = first_pixel[0] == y && first_pixel[2] == y &&
 			     first_pixel[1] == u && first_pixel[3] == v;
 		} else {
-			ok = first_pixel[0] == (unsigned char)(MARK_R + 2u) &&
-			     first_pixel[1] == MARK_G && first_pixel[2] == MARK_B;
+			ok = first_pixel[0] == MARK_B && first_pixel[1] == MARK_G &&
+			     first_pixel[2] == (unsigned char)(MARK_R + 2u);
 		}
 	}
 	printf("sample bytes=%u first_pixel=%02x%02x%02x%02x\n", bytes,

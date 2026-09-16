@@ -93,13 +93,6 @@ static const GUID kIID_IKsControl = {
  * in this toolchain, so the value is spelled out either way and the two agree. */
 static const HRESULT kMFUnsupportedService = (HRESULT)0xC00D36BAL;
 
-/* {F0273718-4A4D-4AC5-A15D-305EB5E90667} - MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES,
- * a UINT32 the frame server reads while bringing a virtual camera up. Also not
- * declared in this toolchain's headers. */
-static const GUID kMFVirtualcameraProvideAssociatedCameraSources = {
-	0xF0273718, 0x4A4D, 0x4AC5, { 0xA1, 0x5D, 0x30, 0x5E, 0xB5, 0xE9, 0x06, 0x67 }
-};
-
 static HMODULE g_module = NULL;
 static LONG g_object_count = 0;
 
@@ -1387,13 +1380,12 @@ static HRESULT vcam_activator_create(IUnknown *outer, REFIID riid, void **out)
 	/* A friendly name is cheap and makes the object identifiable while
 	 * debugging; the real identity is the CLSID. */
 	IMFAttributes_SetString(self->attributes, &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, VCAM_FRIENDLY_NAME);
-	/* A capture source announces its type, and says whether it provides
-	 * associated camera sources. The frame server reads the latter as a UINT32
-	 * and crashing on a null in FrameServerMonitorClient when it is absent is
-	 * what put us on to it. */
-	IMFAttributes_SetGUID(self->attributes, &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
-	                      &MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-	IMFAttributes_SetUINT32(self->attributes, &kMFVirtualcameraProvideAssociatedCameraSources, 0);
+	/* Nothing else. The frame server writes the configuration it wants onto
+	 * the activator before calling ActivateObject, and the source re-exposes
+	 * whatever arrives; announcing a source type or an associated-camera
+	 * answer here was added when a crash was blamed on a missing attribute, and
+	 * that crash turned out to be our vtable. The working reference sets no
+	 * attributes of its own either. */
 	InterlockedIncrement(&g_object_count);
 	hr = activator_query_interface((IMFAttributes *)self, riid, out);
 	activator_release((IMFAttributes *)self);
