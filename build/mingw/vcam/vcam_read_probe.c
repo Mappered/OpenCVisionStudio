@@ -287,6 +287,29 @@ int main(void)
 	                      VCAM_SOURCE_CLSID_STRING,
 	                      NULL, 0, &virtual_camera);
 	printf("MFCreateVirtualCamera: 0x%08lx\n", (unsigned long)created);
+	if (SUCCEEDED(created) && virtual_camera) {
+		/* These parameters identify a camera, and MFCreateVirtualCamera
+		 * *re-opens* one that already exists instead of making a new one. A
+		 * camera whose owner died half way through Start is precisely the
+		 * object that makes the next Start return MF_E_SHUTDOWN (0xC00D3E85,
+		 * which this probe has seen repeatedly), and Remove is the documented
+		 * way to delete it. Doing that unconditionally costs one failed Remove
+		 * when there is nothing there, and removes a whole class of confusion
+		 * when there is. */
+		IMFVirtualCamera_Stop(virtual_camera);
+		printf("cleanup: Remove() -> 0x%08lx\n",
+		       (unsigned long)IMFVirtualCamera_Remove(virtual_camera));
+		IMFVirtualCamera_Shutdown(virtual_camera);
+		IMFVirtualCamera_Release(virtual_camera);
+		virtual_camera = NULL;
+		created = create_vcam(MFVirtualCameraType_SoftwareCameraSource,
+		                      MFVirtualCameraLifetime_Session,
+		                      MFVirtualCameraAccess_CurrentUser,
+		                      VCAM_FRIENDLY_NAME,
+		                      VCAM_SOURCE_CLSID_STRING,
+		                      NULL, 0, &virtual_camera);
+		printf("MFCreateVirtualCamera (after cleanup): 0x%08lx\n", (unsigned long)created);
+	}
 	if (FAILED(created) || !virtual_camera) {
 		printf("VCAM_READ devices=0 found=0 sample_bytes=0\n");
 		MFShutdown();
