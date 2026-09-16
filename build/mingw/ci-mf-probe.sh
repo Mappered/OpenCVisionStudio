@@ -393,8 +393,30 @@ echo '=== virtual camera end to end (publish, enumerate, read a frame) ==='
 gcc -O1 -Wall -Wextra -o "$out_dir/vcam-read.exe" \
 	"$vcam_dir/vcam_read_probe.c" "$vcam_dir/framebus.c" \
 	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid -ladvapi32
+
+# The frame server keeps its reasons to itself, but it does log them: the two
+# services register ETW providers, and capturing them while the reader runs is
+# the only way to see *why* Start fails rather than what it returns.
+echo '=== frame server ETW providers ==='
+MSYS2_ARG_CONV_EXCL='*' logman query providers 2>/dev/null | grep -i 'frameserver' \
+	| sed 's/^/  /' || echo '  (none found; the providers may be named differently here)'
+MSYS2_ARG_CONV_EXCL='*' logman create trace vcametw -ets \
+	-p "Microsoft-Windows-FrameServerMonitor" -p "Microsoft-Windows-FrameServer" \
+	-o "$out_dir\\frameserver.etl" -f bin >/dev/null 2>&1 \
+	&& echo 'trace started' || echo 'note: could not start the ETW trace'
+
 rm -f "$out_dir/vcamsource.dll.log"
 "$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read.log" || true
+
+MSYS2_ARG_CONV_EXCL='*' logman stop vcametw -ets >/dev/null 2>&1 || true
+if MSYS2_ARG_CONV_EXCL='*' tracerpt "$out_dir\\frameserver.etl" -o "$out_dir\\frameserver.csv" -of CSV -y >/dev/null 2>&1; then
+	echo '--- frame server ETW events mentioning a failure or our CLSID ---'
+	grep -i 'fail\|error\|00070\|8F2B1E4C\|not supported\|denied' "$out_dir/frameserver.csv" \
+		| head -40 | sed 's/^/  /' || echo '  (nothing matched)'
+else
+	echo 'note: the ETW trace could not be converted'
+fi
+
 read_line=$(grep '^VCAM_READ ' "$out_dir/vcam-read.log" | tail -n1 || true)
 framebus_line=$(grep '^FRAMEBUS_SELFCHECK ' "$out_dir/vcam-read.log" | tail -n1 || true)
 echo "read line: ${read_line:-none}"

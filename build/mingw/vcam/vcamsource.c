@@ -194,8 +194,15 @@ static void vcam_log(const char *format, ...)
 
 static void vcam_log_iid(const char *what, REFIID riid, HRESULT hr)
 {
-	vcam_log("%s riid=%s {%08lx-%04x-%04x} -> 0x%08lx", what, iid_name(riid),
+	/* The whole GUID, not just the first three fields: an interface the
+	 * pipeline asks for by name is identified by its tail as much as by its
+	 * head, and a truncated one reads as all zeros when it is not. */
+	const unsigned char *tail = riid->Data4;
+	vcam_log("%s %s {%08lx-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x} -> 0x%08lx",
+	         what, iid_name(riid),
 	         (unsigned long)riid->Data1, (unsigned)riid->Data2, (unsigned)riid->Data3,
+	         (unsigned)tail[0], (unsigned)tail[1], (unsigned)tail[2], (unsigned)tail[3],
+	         (unsigned)tail[4], (unsigned)tail[5], (unsigned)tail[6], (unsigned)tail[7],
 	         (unsigned long)hr);
 }
 
