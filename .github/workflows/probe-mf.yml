@@ -270,6 +270,9 @@ jobs:
           # One download instead of twenty-three loose files. Built outside the
           # destination so the archive cannot contain itself, and from the
           # directory's contents so it extracts flat, the way the kit expects.
+          # The copy left by the previous run is removed first for the same
+          # reason: otherwise this run's archive would contain the last one.
+          Remove-Item (Join-Path $dir 'vcam-0.1.0-win-x64.zip') -Force -ErrorAction SilentlyContinue
           $zip = Join-Path $env:RUNNER_TEMP 'vcam-0.1.0-win-x64.zip'
           Remove-Item $zip -Force -ErrorAction SilentlyContinue
           Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -Force
