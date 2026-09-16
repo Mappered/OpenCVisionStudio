@@ -59,8 +59,6 @@ int framebus_create(VcamFrameBus *bus, unsigned long width, unsigned long height
 
 int framebus_open(VcamFrameBus *bus)
 {
-	size_t total;
-
 	memset(bus, 0, sizeof(*bus));
 	bus->mapping = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, kMappingName);
 	if (!bus->mapping)

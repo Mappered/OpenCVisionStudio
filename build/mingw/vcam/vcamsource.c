@@ -281,6 +281,10 @@ struct VcamStream {
 	VcamSource *source;
 	IMFStreamDescriptor *descriptor;
 	UINT64 frame_index;
+	/* The frame bus is per stream: it carries the pixels this stream delivers. */
+	VcamFrameBus bus;
+	int bus_ready;
+	int bus_checked;
 };
 
 static void stream_destroy(VcamStream *self)
@@ -291,6 +295,8 @@ static void stream_destroy(VcamStream *self)
 	}
 	if (self->descriptor)
 		IMFStreamDescriptor_Release(self->descriptor);
+	if (self->bus_ready)
+		framebus_close(&self->bus);
 	free(self);
 }
 
@@ -429,15 +435,15 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 	/* Prefer real frames from the publisher's shared-memory bus; fall back to
 	 * the generator when nobody is publishing, so the camera still comes up on
 	 * a machine with no camera attached. */
-	if (!self->source->bus_checked) {
-		self->source->bus_checked = 1;
-		self->source->bus_ready = framebus_open(&self->source->bus);
+	if (!self->bus_checked) {
+		self->bus_checked = 1;
+		self->bus_ready = framebus_open(&self->bus);
 		vcam_log("stream: frame bus %s",
-		         self->source->bus_ready ? "attached (real frames)" : "absent (generating frames)");
+		         self->bus_ready ? "attached (real frames)" : "absent (generating frames)");
 	}
-	if (self->source->bus_ready) {
+	if (self->bus_ready) {
 		VcamFrameBusHeader info;
-		if (framebus_acquire(&self->source->bus, pixels, VCAM_FRAME_BYTES, &info, 5))
+		if (framebus_acquire(&self->bus, pixels, VCAM_FRAME_BYTES, &info, 5))
 			self->frame_index = info.frame_index + 1;
 		else
 			fill_pattern(pixels, self->frame_index++);
@@ -499,9 +505,6 @@ struct VcamSource {
 	VcamStream *stream;
 	IMFAttributes *source_attributes;
 	IMFAttributes *stream_attributes;
-	VcamFrameBus bus;
-	int bus_ready;
-	int bus_checked;
 };
 
 static void source_destroy(VcamSource *self)
@@ -522,8 +525,6 @@ static void source_destroy(VcamSource *self)
 		IMFAttributes_Release(self->source_attributes);
 	if (self->stream_attributes)
 		IMFAttributes_Release(self->stream_attributes);
-	if (self->bus_ready)
-		framebus_close(&self->bus);
 	free(self);
 }
 
