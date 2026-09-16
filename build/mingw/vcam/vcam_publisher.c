@@ -376,10 +376,15 @@ static int publish_aravis(const char *device_id, unsigned frames, unsigned secon
 	arv_camera_set_acquisition_mode(camera, ARV_ACQUISITION_MODE_CONTINUOUS, &error);
 	for (i = 0; i < sizeof(kPreferredFormats) / sizeof(kPreferredFormats[0]); i++) {
 		GError *format_error = NULL;
-		if (arv_camera_set_pixel_format(camera, kPreferredFormats[i].format, &format_error)) {
+		/* Returns void in this version of Aravis, so the GError is the only
+		 * signal: it stays NULL when the format was accepted. */
+		arv_camera_set_pixel_format(camera, kPreferredFormats[i].format, &format_error);
+		if (!format_error) {
 			printf("aravis: pixel format %s\n", kPreferredFormats[i].name);
 			break;
 		}
+		printf("aravis: %s not accepted (%s)\n", kPreferredFormats[i].name,
+		       format_error->message ? format_error->message : "no reason given");
 		g_clear_error(&format_error);
 	}
 	if (i == sizeof(kPreferredFormats) / sizeof(kPreferredFormats[0]))
