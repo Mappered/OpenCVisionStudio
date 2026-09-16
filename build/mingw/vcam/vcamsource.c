@@ -95,6 +95,15 @@ static const GUID kIID_IMFMediaStream2 = {
 	0xC5BC37D6, 0x75C7, 0x46A1, { 0xA1, 0x32, 0x81, 0xB5, 0xF7, 0x23, 0xC2, 0x0F }
 };
 
+/* {C6E13370-30AC-11D0-A18C-00A0C9118956} PROPSETID_VIDCAP_CAMERACONTROL with
+ * KSPROPERTY_CAMERACONTROL_PRIVACY (id 8), measured: the frame server asks a
+ * capture source for exactly this, as a GET, while bringing a camera up. */
+static const GUID kPROPSETID_VidcapCameraControl = {
+	0xC6E13370, 0x30AC, 0x11D0, { 0xA1, 0x8C, 0x00, 0xA0, 0xC9, 0x11, 0x89, 0x56 }
+};
+#define VCAM_CAMERACONTROL_PRIVACY_ID 8u
+#define VCAM_KSPROPERTY_TYPE_GET 1u
+
 /* MF_STREAM_STATE, from mfidl.h, spelled out so the vtable can be built
  * whether or not this toolchain declares the enumeration. */
 #define VCAM_STREAM_STATE_STOPPED 0u
@@ -451,7 +460,27 @@ static ULONG STDMETHODCALLTYPE stream_subobject_release(void *This)
 static HRESULT STDMETHODCALLTYPE stream_ks_property(void *This, void *property, ULONG property_length,
                                                     void *data, ULONG data_length, ULONG *bytes_returned)
 {
-	(void)This; (void)property; (void)property_length; (void)data; (void)data_length;
+	const unsigned char *raw = (const unsigned char *)property;
+	(void)This;
+	/* Same answer as the source gives, for the same reason. */
+	if (property && property_length >= 24) {
+		unsigned long id = 0, flags = 0;
+		memcpy(&id, raw + 16, sizeof(id));
+		memcpy(&flags, raw + 20, sizeof(flags));
+		if (IsEqualIID((const GUID *)property, &kPROPSETID_VidcapCameraControl) &&
+		    id == VCAM_CAMERACONTROL_PRIVACY_ID) {
+			if (data && data_length >= sizeof(BOOL) && flags == VCAM_KSPROPERTY_TYPE_GET) {
+				*(BOOL *)data = FALSE;
+				if (bytes_returned)
+					*bytes_returned = sizeof(BOOL);
+				return S_OK;
+			}
+			if (bytes_returned)
+				*bytes_returned = 0;
+			return S_OK;
+		}
+	}
+	(void)property_length; (void)data; (void)data_length;
 	if (bytes_returned)
 		*bytes_returned = 0;
 	return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
@@ -816,6 +845,25 @@ static HRESULT STDMETHODCALLTYPE source_ks_property(void *This, void *property, 
 		vcam_log_iid("source KsProperty(set)", (const GUID *)property, S_OK);
 		vcam_log("source KsProperty id=%lu flags=%lu length=%lu",
 		         id, flags, (unsigned long)property_length);
+		/* A capture source is asked whether its privacy control is on. Saying
+		 * "no such property" is not the same answer as "no": the pipeline has
+		 * to be able to read this state, and a source it cannot read is one it
+		 * will not bring up. There is no privacy switch here, so the honest
+		 * value is FALSE. */
+		if (IsEqualIID((const GUID *)property, &kPROPSETID_VidcapCameraControl) &&
+		    id == VCAM_CAMERACONTROL_PRIVACY_ID) {
+			if (data && data_length >= sizeof(BOOL) && flags == VCAM_KSPROPERTY_TYPE_GET) {
+				*(BOOL *)data = FALSE;
+				if (bytes_returned)
+					*bytes_returned = sizeof(BOOL);
+				vcam_log("source KsProperty privacy -> FALSE (4 bytes)");
+				return S_OK;
+			}
+			if (bytes_returned)
+				*bytes_returned = 0;
+			vcam_log("source KsProperty privacy -> nothing to return");
+			return S_OK;
+		}
 	}
 	(void)This; (void)property; (void)property_length; (void)data; (void)data_length;
 	if (bytes_returned)
