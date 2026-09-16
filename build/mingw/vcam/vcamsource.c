@@ -33,6 +33,7 @@
 #include "vcam_clsid.h"
 #include "vcam_media_interfaces.h"
 #include "framebus.h"
+#include "vcam_yuv.h"
 
 /* {8F2B1E4C-3D6A-4A21-9C7E-5B0D8A3F6C11} */
 static const CLSID CLSID_VcamMediaSource = {
@@ -345,10 +346,14 @@ struct VcamStream {
 	VcamFrameBus bus;
 	int bus_ready;
 	int bus_checked;
+	/* The bus carries RGB32; the sample may have to be YUY2. Staging is heap
+	 * because two 1.2 MB buffers on the stack is what once overflowed it. */
+	BYTE *rgb32_frame;
 };
 
 static void stream_destroy(VcamStream *self)
 {
+	free(self->rgb32_frame);
 	if (self->queue) {
 		IMFMediaEventQueue_Shutdown(self->queue);
 		IMFMediaEventQueue_Release(self->queue);
@@ -452,6 +457,25 @@ static HRESULT STDMETHODCALLTYPE stream_get_stream_descriptor(void *This, IMFStr
 	return S_OK;
 }
 
+/* The subtype this stream is currently set to deliver. */
+static GUID stream_current_subtype(VcamStream *self)
+{
+	GUID subtype = MFVideoFormat_RGB32;
+	IMFMediaTypeHandler *handler = NULL;
+	IMFMediaType *type = NULL;
+
+	if (self->descriptor &&
+	    SUCCEEDED(IMFStreamDescriptor_GetMediaTypeHandler(self->descriptor, &handler)) &&
+	    handler &&
+	    SUCCEEDED(IMFMediaTypeHandler_GetCurrentMediaType(handler, &type)) && type)
+		IMFMediaType_GetGUID(type, &MF_MT_SUBTYPE, &subtype);
+	if (type)
+		IMFMediaType_Release(type);
+	if (handler)
+		IMFMediaTypeHandler_Release(handler);
+	return subtype;
+}
+
 /* One frame per request, which is what a live source does. */
 static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *token)
 {
@@ -459,6 +483,8 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 	IMFMediaBuffer *buffer = NULL;
 	IMFSample *sample = NULL;
 	BYTE *pixels = NULL;
+	GUID subtype;
+	DWORD frame_bytes;
 	HRESULT hr;
 
 	vcam_log("stream RequestSample (#%llu)", (unsigned long long)self->frame_index);
@@ -468,14 +494,20 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 	if (self->state != 2)
 		return MF_E_INVALIDREQUEST;
 
-	hr = MFCreateMemoryBuffer(VCAM_FRAME_BYTES, &buffer);
-	if (FAILED(hr))
-		return hr;
-	hr = IMFMediaBuffer_Lock(buffer, &pixels, NULL, NULL);
-	if (FAILED(hr)) {
-		IMFMediaBuffer_Release(buffer);
-		return hr;
+	/* What the consumer negotiated decides what a sample has to be: the bus is
+	 * RGB32 either way. Read it per sample, so a consumer that renegotiates
+	 * mid-session is answered in the format it asked for. */
+	subtype = stream_current_subtype(self);
+	frame_bytes = (subtype == MFVideoFormat_YUY2)
+	              ? VCAM_FRAME_WIDTH * VCAM_FRAME_HEIGHT * 2u
+	              : VCAM_FRAME_BYTES;
+
+	if (!self->rgb32_frame) {
+		self->rgb32_frame = (BYTE *)malloc(VCAM_FRAME_BYTES);
+		if (!self->rgb32_frame)
+			return E_OUTOFMEMORY;
 	}
+
 	/* Prefer real frames from the publisher's shared-memory bus; fall back to
 	 * the generator when nobody is publishing, so the camera still comes up on
 	 * a machine with no camera attached. */
@@ -487,15 +519,28 @@ static HRESULT STDMETHODCALLTYPE stream_request_sample(void *This, IUnknown *tok
 	}
 	if (self->bus_ready) {
 		VcamFrameBusHeader info;
-		if (framebus_acquire(&self->bus, pixels, VCAM_FRAME_BYTES, &info, 5))
+		if (framebus_acquire(&self->bus, self->rgb32_frame, VCAM_FRAME_BYTES, &info, 5))
 			self->frame_index = info.frame_index + 1;
 		else
-			fill_pattern(pixels, self->frame_index++);
+			fill_pattern(self->rgb32_frame, self->frame_index++);
 	} else {
-		fill_pattern(pixels, self->frame_index++);
+		fill_pattern(self->rgb32_frame, self->frame_index++);
 	}
+
+	hr = MFCreateMemoryBuffer(frame_bytes, &buffer);
+	if (FAILED(hr))
+		return hr;
+	hr = IMFMediaBuffer_Lock(buffer, &pixels, NULL, NULL);
+	if (FAILED(hr)) {
+		IMFMediaBuffer_Release(buffer);
+		return hr;
+	}
+	if (subtype == MFVideoFormat_YUY2)
+		vcam_rgb32_to_yuy2(self->rgb32_frame, pixels, VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
+	else
+		memcpy(pixels, self->rgb32_frame, frame_bytes);
 	IMFMediaBuffer_Unlock(buffer);
-	IMFMediaBuffer_SetCurrentLength(buffer, VCAM_FRAME_BYTES);
+	IMFMediaBuffer_SetCurrentLength(buffer, frame_bytes);
 
 	hr = MFCreateSample(&sample);
 	if (SUCCEEDED(hr))
@@ -738,20 +783,19 @@ static HRESULT STDMETHODCALLTYPE source_get_characteristics(void *This, DWORD *c
 }
 
 /* One video stream: RGB32, 640x480, 30 fps. */
-static HRESULT source_build_presentation(VcamSource *self)
+/* One video media type at the geometry the frame bus carries. */
+static HRESULT make_video_type(REFGUID subtype, DWORD stride, DWORD sample_size,
+                               IMFMediaType **out)
 {
 	IMFMediaType *media_type = NULL;
-	IMFMediaTypeHandler *handler = NULL;
 	HRESULT hr;
 
-	if (self->descriptor)
-		return S_OK;
-
+	*out = NULL;
 	hr = MFCreateMediaType(&media_type);
 	if (SUCCEEDED(hr))
 		hr = IMFMediaType_SetGUID(media_type, &MF_MT_MAJOR_TYPE, &MFMediaType_Video);
 	if (SUCCEEDED(hr))
-		hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, &MFVideoFormat_RGB32);
+		hr = IMFMediaType_SetGUID(media_type, &MF_MT_SUBTYPE, subtype);
 	if (SUCCEEDED(hr))
 		hr = set_attribute_size(media_type, &MF_MT_FRAME_SIZE, VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
 	if (SUCCEEDED(hr))
@@ -765,11 +809,38 @@ static HRESULT source_build_presentation(VcamSource *self)
 	if (SUCCEEDED(hr))
 		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_FIXED_SIZE_SAMPLES, TRUE);
 	if (SUCCEEDED(hr))
-		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_DEFAULT_STRIDE, VCAM_FRAME_WIDTH * 4);
+		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_DEFAULT_STRIDE, stride);
 	if (SUCCEEDED(hr))
-		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_SAMPLE_SIZE, VCAM_FRAME_BYTES);
+		hr = IMFMediaType_SetUINT32(media_type, &MF_MT_SAMPLE_SIZE, sample_size);
+	if (SUCCEEDED(hr)) {
+		*out = media_type;
+		return S_OK;
+	}
+	if (media_type)
+		IMFMediaType_Release(media_type);
+	return hr;
+}
+
+static HRESULT source_build_presentation(VcamSource *self)
+{
+	/* YUY2 first, and the current type: it is what a capture source is
+	 * expected to carry, and the frame server synthesises every other format
+	 * from it. RGB32 stays advertised - it is the bus's own format and the
+	 * harness reads it - but it is not what a camera declares. */
+	IMFMediaType *types[2] = { NULL, NULL };
+	IMFMediaTypeHandler *handler = NULL;
+	HRESULT hr;
+
+	if (self->descriptor)
+		return S_OK;
+
+	hr = make_video_type(&MFVideoFormat_YUY2, VCAM_FRAME_WIDTH * 2u,
+	                     VCAM_FRAME_WIDTH * VCAM_FRAME_HEIGHT * 2u, &types[0]);
 	if (SUCCEEDED(hr))
-		hr = MFCreateStreamDescriptor(0, 1, &media_type, &self->stream_descriptor);
+		hr = make_video_type(&MFVideoFormat_RGB32, VCAM_FRAME_WIDTH * 4u,
+		                     VCAM_FRAME_BYTES, &types[1]);
+	if (SUCCEEDED(hr))
+		hr = MFCreateStreamDescriptor(0, 2, types, &self->stream_descriptor);
 	if (SUCCEEDED(hr)) {
 		/* The frame server classifies a stream by these. Without the capture
 		 * pin category it does not treat the source as a camera at all, which
@@ -783,7 +854,7 @@ static HRESULT source_build_presentation(VcamSource *self)
 	if (SUCCEEDED(hr))
 		hr = IMFStreamDescriptor_GetMediaTypeHandler(self->stream_descriptor, &handler);
 	if (SUCCEEDED(hr))
-		hr = IMFMediaTypeHandler_SetCurrentMediaType(handler, media_type);
+		hr = IMFMediaTypeHandler_SetCurrentMediaType(handler, types[0]);
 	if (SUCCEEDED(hr))
 		hr = MFCreatePresentationDescriptor(1, &self->stream_descriptor, &self->descriptor);
 	if (SUCCEEDED(hr))
@@ -791,8 +862,10 @@ static HRESULT source_build_presentation(VcamSource *self)
 
 	if (handler)
 		IMFMediaTypeHandler_Release(handler);
-	if (media_type)
-		IMFMediaType_Release(media_type);
+	if (types[1])
+		IMFMediaType_Release(types[1]);
+	if (types[0])
+		IMFMediaType_Release(types[0]);
 	return hr;
 }
 
@@ -809,8 +882,8 @@ static HRESULT STDMETHODCALLTYPE source_create_presentation_descriptor(void *Thi
 		return hr;
 	/* Hand out a copy: callers are allowed to modify the descriptor they get. */
 	hr = IMFPresentationDescriptor_Clone(self->descriptor, descriptor);
-	vcam_log("source CreatePresentationDescriptor -> 0x%08lx (%dx%d RGB32)", (unsigned long)hr,
-	         VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
+	vcam_log("source CreatePresentationDescriptor -> 0x%08lx (%dx%d YUY2 + RGB32)",
+	         (unsigned long)hr, VCAM_FRAME_WIDTH, VCAM_FRAME_HEIGHT);
 	return hr;
 }
 

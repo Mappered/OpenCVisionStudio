@@ -31,6 +31,7 @@
 
 #include "framebus.h"
 #include "vcam_clsid.h"
+#include "vcam_yuv.h"
 
 /* A pattern no generated frame would produce, so a sample carrying it can only
  * have come from the bus. */
@@ -85,6 +86,7 @@ int main(int argc, char **argv)
 	unsigned char *marked = NULL;
 	unsigned samples = 0;
 	unsigned bytes = 0;
+	unsigned expected_bytes = 0;
 	unsigned char first_pixel[4] = { 0, 0, 0, 0 };
 	int bus_ready = 0;
 	int self_publish = 1;
@@ -160,9 +162,18 @@ int main(int argc, char **argv)
 	}
 	IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype);
 	IMFMediaType_GetUINT64(media_type, &MF_MT_FRAME_SIZE, &frame_size);
-	printf("media type: %lux%lu subtype={%08lx-%04x-%04x-...}\n",
+	/* What a sample has to be follows from the negotiated subtype, not from
+	 * what the bus carries. */
+	if (subtype == MFVideoFormat_YUY2)
+		expected_bytes = VCAM_FRAME_WIDTH * VCAM_FRAME_HEIGHT * 2u;
+	else if (subtype == MFVideoFormat_RGB32)
+		expected_bytes = VCAM_FRAME_BYTES;
+	printf("media type: %lux%lu subtype=%s sample_bytes=%u\n",
 	       (unsigned long)(frame_size >> 32), (unsigned long)(frame_size & 0xFFFFFFFFu),
-	       (unsigned long)subtype.Data1, (unsigned)subtype.Data2, (unsigned)subtype.Data3);
+	       subtype == MFVideoFormat_YUY2 ? "YUY2" :
+	       subtype == MFVideoFormat_RGB32 ? "RGB32" :
+	       subtype == MFVideoFormat_NV12 ? "NV12" : "other",
+	       expected_bytes);
 
 	PropVariantInit(&start);
 	hr = IMFMediaSource_Start(source, descriptor, &GUID_NULL, &start);
@@ -242,11 +253,23 @@ int main(int argc, char **argv)
 		IMFMediaEvent_Release(event);
 	}
 
-	ok = samples > 0 && bytes == VCAM_FRAME_BYTES;
+	ok = samples > 0 && (expected_bytes == 0 || bytes == expected_bytes);
 	/* With our own mark on the bus the pixels have to be that mark; without it,
-	 * the frame is somebody else's and only its size can be judged here. */
-	if (ok && self_publish)
-		ok = first_pixel[1] == MARK_G && first_pixel[2] == MARK_B;
+	 * the frame is somebody else's and only its size can be judged here. The
+	 * mark is checked in whatever format the type asked for, using the same
+	 * conversion the source used - the newest published frame is index 2, which
+	 * is the one a live stream delivers. */
+	if (ok && self_publish) {
+		if (subtype == MFVideoFormat_YUY2) {
+			unsigned char y, u, v;
+			vcam_rgb_to_yuv(MARK_R + 2u, MARK_G, MARK_B, &y, &u, &v);
+			ok = first_pixel[0] == y && first_pixel[2] == y &&
+			     first_pixel[1] == u && first_pixel[3] == v;
+		} else {
+			ok = first_pixel[0] == (unsigned char)(MARK_R + 2u) &&
+			     first_pixel[1] == MARK_G && first_pixel[2] == MARK_B;
+		}
+	}
 	printf("sample bytes=%u first_pixel=%02x%02x%02x%02x\n", bytes,
 	       first_pixel[0], first_pixel[1], first_pixel[2], first_pixel[3]);
 	printf("SOURCE_DRIVE ok=%d samples=%u bus=%d\n", ok, samples, bus_ready);
