@@ -92,12 +92,29 @@ CI run of `build/mingw/mf-vcam-dyn.c` (see the Probe Media Foundation workflow).
 | `IMFVirtualCamera` IID | `1C08A864-EF6C-4C75-AF59-5F2D68DA9563` |
 | Method order | `AddDeviceSourceInfo`, `AddProperty`, `AddRegistryEntry`, `Start`, `Stop`, `Remove`, `GetMediaSource`, `SendCameraProperty`, `CreateSyncEvent`, `CreateSyncSemaphore`, `Shutdown` |
 
-Remaining work to reach the goal: implement the media source that feeds the
-camera (`IMFMediaSource` + `IMFMediaStream`, delivering frames from the grabber
-layer), publish it with `AddDeviceSourceInfo`/`Start`, and verify that a real
-application enumerates and previews it. First frame source should be the
-synthetic/test path so this works with no camera attached; Aravis is wired in
-after the device is visible.
+The media source that makes applications see a camera, as measured:
+
+| Question | Answer |
+|---|---|
+| What does `sourceId` name? | A **CLSID string**. Media Foundation activates it in-process even for `Lifetime_Session`/`Access_CurrentUser`, and the object must answer **`IMFActivate`**; `ActivateObject` then hands out the source, which must also answer **`IMFMediaSourceEx`** `{3C9B2EB9-86D5-4514-A394-F56664F9F0D8}` |
+| With nothing registered under that CLSID? | `Start` fails with `REGDB_E_CLASSNOTREG` - that is how "the CLSID is what `Start` needs" was established |
+| A stream without `MF_DEVICESTREAM_STREAM_CATEGORY` = `PINNAME_VIDEO_CAPTURE`? | the frame server refuses the source, before it ever calls `Start` on it |
+| MinGW headers for any of this? | no `mfvirtualcamera.h`, no `MF_DEVICESTREAM_*` keys, and `IMFMediaStreamVtbl` is missing the queue-parameter methods - all three are declared by hand |
+| Where do frames come from? | a shared-memory frame bus (double-buffered, sequence-flipped, named event), so the process that owns the camera and the media source inside the frame server never share a library, only memory |
+
+What CI proves now: registration, creation, `Start`, enumeration and a frame
+read, plus the publisher half end to end - a continuous Aravis acquisition at
+~25 fps from Aravis' own fake GigE Vision camera, read back by a second process
+at the geometry the media source advertises (a 512x512 sensor arrives letterboxed
+in 640x480 RGB32 rather than sheared).
+
+What is left is a client-machine answer, not more code: on a Windows **Server**
+SKU the frame server faults inside its own `FrameServerMonitorClient.dll`, so the
+last two steps - the camera appearing in the Windows Camera app, and a frame
+arriving through the frame server - can only be confirmed on a Windows 11 client.
+The kit for that is on the `artifacts` branch at `vcam/0.1.0/win-x64/`:
+`run-live.cmd` registers the media source and starts the publisher, `run-stop.cmd`
+undoes it.
 
 ## Milestones
 
@@ -115,7 +132,7 @@ after the device is visible.
 | M9 | Emitter: IR → OpenCV C++ and Python, step-synced code window | emitted C++ compiles and reproduces corpus results |
 | M10 | Real `.hdev` text open/save + unsupported-operator report ranked by frequency | importing a real program lists the next operators to implement, in order |
 | M11 | Media Foundation webcam backend. Step 0 is a CI probe: prove MinGW's MF headers and import libraries actually build and link something that enumerates devices | enumeration and pixel-format conversion covered in CI; frame capture verified on a machine with a webcam, since runners have none |
-| M12 | Aravis to webcam: user-mode virtual camera. API reached by dynamic resolution (headers predate it), media source implemented and published | a separate process (browser, VLC, `ffmpeg -f dshow`) enumerates and shows the virtual camera, fed by a real Aravis camera |
+| M12 | Aravis to webcam: user-mode virtual camera. API reached by dynamic resolution (headers predate it), media source implemented and published | half of it is CI-proven: Aravis to frame bus to a second process, live and continuously, at 640x480 RGB32. The other half - a separate process (browser, VLC, Camera app) enumerating and showing the camera - needs a Windows 11 client; the runner is a Server SKU whose frame server faults in `FrameServerMonitorClient.dll`. Kit: `artifacts:vcam/0.1.0/win-x64/` |
 
 ## Aravis integration
 
