@@ -48,6 +48,12 @@ Other pieces of the kit
   vcam-read.exe        creates the camera, starts it, enumerates Media
                        Foundation devices, reads one frame, removes the
                        camera. This is what CI runs; useful as a check.
+  vcam-sourcedrive.exe drives the media source directly, the way the
+                       frame server would, with no frame server involved:
+                       it publishes a marked frame of its own and checks the
+                       pixels that come back. Run it with --no-publish to
+                       instead read whatever a running publisher is putting
+                       on the bus - that is the camera-to-sample proof.
   vcam-register.exe    register/unregister the media source by hand.
   arv-tool-0.10.exe    Aravis own tool: "arv-tool-0.10.exe list" shows
                        what the GV/USB3 stack sees.
