@@ -4,10 +4,10 @@
   "platform": "win-x64",
   "modules": "IMFActivate media source, IMFMediaSourceEx, RGB32 640x480; Aravis publisher (GigE Vision/USB3 Vision) over the shared-memory frame bus",
   "toolchain": "x86_64-w64-mingw32, gcc 16.2.0 (see the probe run for exact versions)",
-  "built_utc": "2026-09-16T01:35:35Z",
-  "source_commit": "a0394dbf52451ff4ba486760d0a5541a74fd5d42",
+  "built_utc": "2026-09-16T01:39:01Z",
+  "source_commit": "7a671ab408f8067fe61754c10df2a5f1874a49ec",
   "source_ref": "workflows",
   "subtree_tree": "n/a (this package is not built from a vendored subtree)",
-  "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35044545486",
+  "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35044772508",
   "dependencies": {}
 }
