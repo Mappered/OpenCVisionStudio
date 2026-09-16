@@ -121,6 +121,23 @@ the camera's own letterboxed frame. So "Aravis frames become Media Foundation
 samples of the advertised type" is measured, not assumed - what the frame server
 still has to agree to is only that this source is a camera.
 
+Three things the server will not accept, all measured:
+
+- **RGB32 is not a capture format.** The working reference advertises only
+  NV12, YUY2 and MJPG, and the frame server synthesises the rest from whatever
+  the source declares. The source now advertises **YUY2** first and converts the
+  bus's RGB32 into it (RGB32 stays as a second type, because it is the bus's own
+  format and the harness reads it). The harness reads 614400 bytes and the live
+  camera's letterbox converts to Y=16, U=V=128, which is black.
+- **The activator must not announce things.** A source type and an
+  associated-cameras answer were being set on the activator when a crash was
+  blamed on a missing attribute; that crash turned out to be our vtable. With
+  them gone the pipeline asks for the key, is told `MF_E_ATTRIBUTENOTFOUND`, and
+  carries on - which is what the reference does.
+- **Leftover cameras are not the problem, either.** `MFCreateVirtualCamera`
+  re-opens a camera with the same parameters, so the reader now calls `Remove`
+  first and creates again; that was checked on the runner and changed nothing.
+
 What is left is one elevated run on a Windows 11 client, and it is an access
 question rather than a code question. The frame server CoCreates the media
 source *inside its own service process*, which cannot read HKCU, so the class
