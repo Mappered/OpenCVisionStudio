@@ -288,7 +288,7 @@ done
 cp -f "$gen_dir/arvapi.h" "$gen_dir/arvfeatures.h" "$gen_dir/arvversion.h" "$include_dir/"
 
 cat > "$prefix/lib/pkgconfig/aravis-$api.pc" <<EOF
-prefix=$prefix
+prefix=\${pcfiledir}/../..
 exec_prefix=\${prefix}
 libdir=\${exec_prefix}/lib
 includedir=\${prefix}/include
@@ -296,11 +296,69 @@ includedir=\${prefix}/include
 Name: Aravis
 Description: Camera control and image acquisition library
 Version: $version
-Requires: glib-2.0 gobject-2.0 gio-2.0
-Requires.private: libxml-2.0
-Libs: -L\${libdir} -laravis-$api
-Cflags: -I\${includedir}/aravis-$api
+Libs: -L\${libdir} -laravis-$api -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 -lxml2 -lusb-1.0 -lz
+Cflags: -I\${includedir}/aravis-$api -I\${includedir}/glib-2.0 -I\${includedir}/libxml2 -I\${includedir}/libusb-1.0 -I\${libdir}/glib-2.0/include
 EOF
+
+# ---------------------------------------------------------------------------
+# Dependency headers and import libraries.
+#
+# <arv.h> includes <glib-object.h>, so a package holding only aravis headers
+# cannot be compiled against - it can run but not build. This is the difference
+# between shipping binaries and shipping an SDK, and a consumer hitting it is
+# what prompted the change. The .pc above deliberately spells out the flags
+# instead of using Requires, so it works without the dependencies' own .pc
+# files, whose prefixes point at the machine that built them.
+# ---------------------------------------------------------------------------
+echo '=== dependency headers and import libraries ==='
+for h in glib-2.0 libxml2 libusb-1.0; do
+	src_h="/mingw64/include/$h"
+	[ -d "$src_h" ] || { echo "error: missing dependency headers: $src_h" >&2; exit 1; }
+	cp -r "$src_h" "$prefix/include/"
+done
+for h in zlib.h zconf.h; do
+	[ -f "/mingw64/include/$h" ] || { echo "error: missing header: /mingw64/include/$h" >&2; exit 1; }
+	cp -f "/mingw64/include/$h" "$prefix/include/"
+done
+mkdir -p "$prefix/lib/glib-2.0/include"
+[ -f /mingw64/lib/glib-2.0/include/glibconfig.h ] \
+	|| { echo 'error: glibconfig.h missing' >&2; exit 1; }
+cp -f /mingw64/lib/glib-2.0/include/glibconfig.h "$prefix/lib/glib-2.0/include/"
+for lib in glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 xml2 usb-1.0 z; do
+	[ -f "/mingw64/lib/lib$lib.dll.a" ] || { echo "error: missing import library: lib$lib.dll.a" >&2; exit 1; }
+	cp -f "/mingw64/lib/lib$lib.dll.a" "$prefix/lib/"
+done
+echo "dependency headers and $(ls "$prefix/lib"/*.dll.a | wc -l) import libraries staged"
+
+cat > "$prefix/README.txt" <<EOF
+Aravis $version ($api) for MinGW-w64
+====================================
+
+Layout
+  include/aravis-$api/   Aravis headers (include <arv.h>)
+  include/glib-2.0/      GLib headers, which <arv.h> needs
+  include/libxml2/       libxml2 headers
+  include/libusb-1.0/    libusb headers
+  lib/                   import libraries: -laravis-$api plus its dependencies
+  lib/glib-2.0/include/  glibconfig.h
+  lib/pkgconfig/         aravis-$api.pc (relocatable; spells out all flags)
+  bin/                   runtime DLLs, including libaravis-$api-0.dll and the tools
+  licenses/              licence texts for everything redistributed
+
+Compiling against it
+  gcc myapp.c -o myapp.exe \$(pkg-config --cflags --libs aravis-$api)
+or, without pkg-config:
+  gcc myapp.c -o myapp.exe \\
+    -I<package>/include/aravis-$api -I<package>/include/glib-2.0 \\
+    -I<package>/lib/glib-2.0/include \\
+    -L<package>/lib -laravis-$api -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 -lxml2 -lusb-1.0 -lz
+
+Running
+  Put <package>/bin on PATH, or copy its DLLs next to your executable: MinGW
+  searches the executable's own directory first, and the DLLs here are the ones
+  the import libraries were built against.
+EOF
+echo "wrote package README.txt"
 
 # ---------------------------------------------------------------------------
 # Runtime dependencies: rather than guessing glib's transitive DLL set, ask the
