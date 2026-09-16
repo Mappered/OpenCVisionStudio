@@ -23,6 +23,22 @@ Live camera as a webcam (Windows 11)
   3. run-stop.cmd when you are done: stops the publisher and removes the
      registration again.
 
+Elevation is not optional, and here is why
+  The frame server CoCreates the media source inside its own service
+  process. That process cannot read HKCU, so a per-user registration is
+  not enough: the class has to be in HKLM, and writing HKLM needs an
+  elevated prompt. With HKCU only, Media Foundation still creates an
+  in-process instance while configuring the camera - which is why the
+  trace looks healthy - but IMFVirtualCamera::Start then fails with
+  ERROR_PATH_NOT_FOUND (0x80070003), the service having found no class.
+
+First check, without a camera
+  run-verify.cmd
+  registers, creates the virtual camera, enumerates it, reads one frame
+  and leaves the reader output and the media source trace in this folder.
+  This is the same thing CI does, only on a machine where the frame
+  server can actually run.
+
 Testing without a camera
   vcam-publisher.exe --synthetic --run
   publishes generated frames through the same path, so the webcam can be
