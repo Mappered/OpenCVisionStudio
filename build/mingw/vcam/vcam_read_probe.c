@@ -38,8 +38,11 @@ static int framebus_selfcheck(void)
 {
 	VcamFrameBus publisher;
 	VcamFrameBus consumer;
-	unsigned char frame[VCAM_FRAME_BYTES];
-	unsigned char received[VCAM_FRAME_BYTES];
+	/* Static, not automatic: two 640x480x4 buffers are 2.4 MB, and the default
+	 * stack is 1 MB. Putting them on the stack overflowed it (0xC00000FD) and
+	 * killed the reader before it printed anything. */
+	static unsigned char frame[VCAM_FRAME_BYTES];
+	static unsigned char received[VCAM_FRAME_BYTES];
 	VcamFrameBusHeader info;
 	int ok = 0;
 	unsigned index;
