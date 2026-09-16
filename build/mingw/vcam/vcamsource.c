@@ -410,22 +410,6 @@ static HRESULT STDMETHODCALLTYPE stream_queue_event(void *This, MediaEventType t
 	return plumbing_queue_event(&p, type, extended_type, status, event);
 }
 
-static HRESULT STDMETHODCALLTYPE stream_queue_param_var(void *This, MediaEventType type, REFGUID extended_type,
-                                                        HRESULT status, const PROPVARIANT *value)
-{
-	VcamStream *self = (VcamStream *)This;
-	EventPlumbing p = { self->queue, &self->state };
-	return plumbing_queue_param_var(&p, type, extended_type, status, value);
-}
-
-static HRESULT STDMETHODCALLTYPE stream_queue_param_unk(void *This, MediaEventType type, REFGUID extended_type,
-                                                        HRESULT status, IUnknown *value)
-{
-	VcamStream *self = (VcamStream *)This;
-	EventPlumbing p = { self->queue, &self->state };
-	return plumbing_queue_param_unk(&p, type, extended_type, status, value);
-}
-
 static HRESULT STDMETHODCALLTYPE stream_get_media_source(void *This, IMFMediaSource **source)
 {
 	VcamStream *self = (VcamStream *)This;
@@ -521,8 +505,6 @@ static const VcamMediaStreamVtbl vcam_stream_vtbl = {
 		.BeginGetEvent = stream_begin_get_event,
 		.EndGetEvent = stream_end_get_event,
 		.QueueEvent = stream_queue_event,
-		.QueueEventParamVar = stream_queue_param_var,
-		.QueueEventParamUnk = stream_queue_param_unk,
 	},
 	.GetMediaSource = stream_get_media_source,
 	.GetStreamDescriptor = stream_get_stream_descriptor,
@@ -628,22 +610,6 @@ static HRESULT STDMETHODCALLTYPE source_queue_event(void *This, MediaEventType t
 	VcamSource *self = (VcamSource *)This;
 	EventPlumbing p = { self->queue, &self->state };
 	return plumbing_queue_event(&p, type, extended_type, status, event);
-}
-
-static HRESULT STDMETHODCALLTYPE source_queue_param_var(void *This, MediaEventType type, REFGUID extended_type,
-                                                        HRESULT status, const PROPVARIANT *value)
-{
-	VcamSource *self = (VcamSource *)This;
-	EventPlumbing p = { self->queue, &self->state };
-	return plumbing_queue_param_var(&p, type, extended_type, status, value);
-}
-
-static HRESULT STDMETHODCALLTYPE source_queue_param_unk(void *This, MediaEventType type, REFGUID extended_type,
-                                                        HRESULT status, IUnknown *value)
-{
-	VcamSource *self = (VcamSource *)This;
-	EventPlumbing p = { self->queue, &self->state };
-	return plumbing_queue_param_unk(&p, type, extended_type, status, value);
 }
 
 static HRESULT STDMETHODCALLTYPE source_get_characteristics(void *This, DWORD *characteristics)
@@ -924,8 +890,6 @@ static const VcamMediaSourceVtbl vcam_source_vtbl = {
 		.BeginGetEvent = source_begin_get_event,
 		.EndGetEvent = source_end_get_event,
 		.QueueEvent = source_queue_event,
-		.QueueEventParamVar = source_queue_param_var,
-		.QueueEventParamUnk = source_queue_param_unk,
 	},
 	.GetCharacteristics = source_get_characteristics,
 	.CreatePresentationDescriptor = source_create_presentation_descriptor,

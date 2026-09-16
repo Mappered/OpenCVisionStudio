@@ -4,8 +4,6 @@
  * Why not use MinGW's? Because its declarations turned out to be unusable for
  * an object we hand to the Windows frame server:
  *
- *   - MinGW's IMFMediaStreamVtbl has no QueueEventParamVar / QueueEventParamUnk
- *     members at all (the compiler rejects the initialisers).
  *   - MinGW's IMFMediaEventQueue::QueueEvent takes only the event, not the
  *     (type, guid, status, event) tuple; the queue and the generator are
  *     different interfaces with different signatures.
@@ -15,6 +13,15 @@
  * six methods, then the interface's own. Nesting the generator struct as the
  * first member produces that layout, and the method order is taken from
  * Microsoft's documentation.
+ *
+ * A first version of this file also put QueueEventParamVar and
+ * QueueEventParamUnk in the generator. They are not part of
+ * IMFMediaEventGenerator - they belong to IMFMediaEventQueue - and carrying
+ * them here shifted every method after them by two slots. The frame server then
+ * called GetSourceAttributes (slot 10) into Pause, which is why Start returned
+ * whatever Pause returned, and why answering S_OK from Pause without filling
+ * the caller's out-parameter faulted inside FrameServerMonitorClient. MinGW's
+ * own headers, which declare four generator methods, were right.
  */
 
 #ifndef VCAM_MEDIA_INTERFACES_H
@@ -37,10 +44,6 @@ typedef struct VcamMediaEventGeneratorVtbl {
 	HRESULT (STDMETHODCALLTYPE *EndGetEvent)(void *This, IMFAsyncResult *result, IMFMediaEvent **event);
 	HRESULT (STDMETHODCALLTYPE *QueueEvent)(void *This, MediaEventType type, REFGUID extended_type,
 	                                        HRESULT status, IMFMediaEvent *event);
-	HRESULT (STDMETHODCALLTYPE *QueueEventParamVar)(void *This, MediaEventType type, REFGUID extended_type,
-	                                                HRESULT status, const PROPVARIANT *value);
-	HRESULT (STDMETHODCALLTYPE *QueueEventParamUnk)(void *This, MediaEventType type, REFGUID extended_type,
-	                                                HRESULT status, IUnknown *value);
 } VcamMediaEventGeneratorVtbl;
 
 typedef struct VcamMediaSourceVtbl {
