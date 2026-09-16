@@ -58,6 +58,25 @@ jobs:
           }
           throw 'MSYS2 not found on this image'
 
+      # The publisher links against Aravis, and MSYS2 has no git of its own, so
+      # the package is fetched here and unpacked by the script. A detached
+      # worktree gives byte-exact files; redirecting `git show` in PowerShell
+      # would corrupt the zip.
+      - name: Fetch the Aravis package for the publisher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch --quiet --depth 1 origin artifacts
+          $checkout = Join-Path $env:RUNNER_TEMP 'aravis-artifacts'
+          if (Test-Path $checkout) { git worktree remove --force $checkout 2>$null }
+          git worktree add --detach $checkout origin/artifacts | Out-Null
+          $source = Join-Path $checkout 'aravis\0.9.3\win-x64\aravis-0.9.3-win-x64.zip'
+          if (-not (Test-Path $source)) { throw "aravis package not found at $source" }
+          New-Item -ItemType Directory -Force -Path 'build' | Out-Null
+          Copy-Item $source 'build\aravis-package.zip' -Force
+          git worktree remove --force $checkout
+          Write-Host ("staged Aravis package: {0:N0} bytes" -f (Get-Item 'build\aravis-package.zip').Length)
+
       - name: Build and run the probe
         shell: pwsh
         run: |

@@ -190,9 +190,11 @@ echo "built $out_dir/vcamsource.dll"
 # ---------------------------------------------------------------------------
 echo '=== publisher: Aravis package from the artifacts branch ==='
 pacman -S --noconfirm --needed --disable-download-timeout unzip >/dev/null 2>&1 || true
-git fetch --quiet --depth 1 origin artifacts
 aravis_zip="$repo_root/build/aravis-package.zip"
-git show origin/artifacts:aravis/0.9.3/win-x64/aravis-0.9.3-win-x64.zip > "$aravis_zip"
+if [ ! -f "$aravis_zip" ]; then
+	echo "error: $aravis_zip is missing - the workflow stage that fetches it did not run" >&2
+	exit 1
+fi
 sdk="$repo_root/build/aravis-sdk"
 rm -rf "$sdk"
 mkdir -p "$sdk"
