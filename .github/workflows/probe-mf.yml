@@ -105,7 +105,7 @@ jobs:
           $dir = Join-Path $checkout ($dest -replace '/', '\')
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
-          foreach ($file in @('vcamsource.dll', 'vcam-register.exe', 'vcam-read.exe', 'vcam-publisher.exe')) {
+          foreach ($file in @('vcamsource.dll', 'vcam-register.exe', 'vcam-read.exe', 'vcam-publisher.exe', 'vcam-sourcedrive.exe')) {
             $from = Join-Path $out $file
             if (-not (Test-Path $from)) { throw "missing $file - the probe did not build it" }
             Copy-Item $from $dir -Force
@@ -301,6 +301,12 @@ jobs:
             '  vcam-read.exe        creates the camera, starts it, enumerates Media',
             '                       Foundation devices, reads one frame, removes the',
             '                       camera. This is what CI runs; useful as a check.',
+            '  vcam-sourcedrive.exe drives the media source directly, the way the',
+            '                       frame server would, with no frame server involved:',
+            '                       it publishes a marked frame of its own and checks the',
+            '                       pixels that come back. Run it with --no-publish to',
+            '                       instead read whatever a running publisher is putting',
+            '                       on the bus - that is the camera-to-sample proof.',
             '  vcam-register.exe    register/unregister the media source by hand.',
             '  arv-tool-0.10.exe    Aravis own tool: "arv-tool-0.10.exe list" shows',
             '                       what the GV/USB3 stack sees.',

@@ -555,7 +555,6 @@ struct VcamSource {
 	IMFStreamDescriptor *stream_descriptor;
 	VcamStream *stream;
 	IMFAttributes *source_attributes;
-	IMFAttributes *stream_attributes;
 	/* The two extra interfaces, as COM sub-objects: the frame server asks for
 	 * them on the source, and one struct cannot have two vtables at offset 0. */
 	VcamSubobject get_service;
@@ -578,8 +577,6 @@ static void source_destroy(VcamSource *self)
 		IMFStreamDescriptor_Release(self->stream_descriptor);
 	if (self->source_attributes)
 		IMFAttributes_Release(self->source_attributes);
-	if (self->stream_attributes)
-		IMFAttributes_Release(self->stream_attributes);
 	free(self);
 }
 

@@ -111,6 +111,16 @@ Vision camera, read back by a second process at the geometry the media source
 advertises (a 512x512 sensor arrives letterboxed in 640x480 RGB32 rather than
 sheared).
 
+The media source's own half is proven too, and without the frame server: a
+harness (`vcam_source_drive.c`, shipped as `vcam-sourcedrive.exe`) creates the
+source by CLSID, asks for its presentation descriptor, starts it, requests
+samples and reads them back. Publishing a frame with a mark no generator would
+produce, the sample comes out byte-exact (1228800 bytes, `first_pixel=132233ff`);
+and with nothing of its own on the bus while Aravis is streaming, the sample is
+the camera's own letterboxed frame. So "Aravis frames become Media Foundation
+samples of the advertised type" is measured, not assumed - what the frame server
+still has to agree to is only that this source is a camera.
+
 What is left is one elevated run on a Windows 11 client, and it is an access
 question rather than a code question. The frame server CoCreates the media
 source *inside its own service process*, which cannot read HKCU, so the class
