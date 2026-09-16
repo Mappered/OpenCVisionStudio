@@ -71,6 +71,35 @@ typedef struct VcamMediaStreamVtbl {
 	HRESULT (STDMETHODCALLTYPE *RequestSample)(void *This, IUnknown *token);
 } VcamMediaStreamVtbl;
 
+/* Two more interfaces the frame server asks a capture source for by name, and
+ * which MinGW's headers do not declare at all. Neither is optional in the
+ * "answer or not" sense: the working reference implementation answers both, and
+ * a source that returns E_NOINTERFACE is a different object to a pipeline than
+ * one that returns "that service is unsupported". Each is a COM sub-object -
+ * a vtable pointer first, then the source it forwards refcounting to - because
+ * one C struct cannot carry two vtable pointers at offset zero. */
+typedef struct VcamGetServiceVtbl {
+	HRESULT (STDMETHODCALLTYPE *QueryInterface)(void *This, REFIID riid, void **out);
+	ULONG   (STDMETHODCALLTYPE *AddRef)(void *This);
+	ULONG   (STDMETHODCALLTYPE *Release)(void *This);
+	HRESULT (STDMETHODCALLTYPE *GetService)(void *This, REFGUID service, REFIID riid, void **out);
+} VcamGetServiceVtbl;
+
+/* IKsControl {28F54685-06FD-11D2-B27A-00A0C9223196}. The parameters are the
+ * KS structures this build has no headers for; they are never dereferenced,
+ * only answered, so their types do not matter beyond the ABI. */
+typedef struct VcamKsControlVtbl {
+	HRESULT (STDMETHODCALLTYPE *QueryInterface)(void *This, REFIID riid, void **out);
+	ULONG   (STDMETHODCALLTYPE *AddRef)(void *This);
+	ULONG   (STDMETHODCALLTYPE *Release)(void *This);
+	HRESULT (STDMETHODCALLTYPE *KsProperty)(void *This, void *property, ULONG property_length,
+	                                        void *data, ULONG data_length, ULONG *bytes_returned);
+	HRESULT (STDMETHODCALLTYPE *KsMethod)(void *This, void *method, ULONG method_length,
+	                                      void *data, ULONG data_length, ULONG *bytes_returned);
+	HRESULT (STDMETHODCALLTYPE *KsEvent)(void *This, void *event, ULONG event_length,
+	                                     void *data, ULONG data_length, ULONG *bytes_returned);
+} VcamKsControlVtbl;
+
 /* The object the CLSID must provide is an activator: an IMFAttributes whose
  * ActivateObject produces the media source. The frame server asks for
  * IID_IMFActivate directly, which the trace of its QueryInterface calls showed.

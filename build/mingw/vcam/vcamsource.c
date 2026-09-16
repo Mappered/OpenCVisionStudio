@@ -77,6 +77,21 @@ static const GUID kPinCategoryCapture = {
 	0x65E8773D, 0x8F56, 0x11D0, { 0xA3, 0xB9, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 }
 };
 
+/* The two interfaces a capture source is asked for by name, and which this
+ * toolchain's headers do not declare: {FA993888-4383-415A-A930-DD472A8CF6F7}
+ * IMFGetService (Microsoft's mfidl.h) and
+ * {28F54685-06FD-11D2-B27A-00A0C9223196} IKsControl (ksuuids.h). */
+static const GUID kIID_IMFGetService = {
+	0xFA993888, 0x4383, 0x415A, { 0xA9, 0x30, 0xDD, 0x47, 0x2A, 0x8C, 0xF6, 0xF7 }
+};
+static const GUID kIID_IKsControl = {
+	0x28F54685, 0x06FD, 0x11D2, { 0xB2, 0x7A, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 }
+};
+
+/* MF_E_UNSUPPORTED_SERVICE, from Microsoft's mferror.h. The macro may not exist
+ * in this toolchain, so the value is spelled out either way and the two agree. */
+static const HRESULT kMFUnsupportedService = (HRESULT)0xC00D36BAL;
+
 /* {F0273718-4A4D-4AC5-A15D-305EB5E90667} - MF_VIRTUALCAMERA_PROVIDE_ASSOCIATED_CAMERA_SOURCES,
  * a UINT32 the frame server reads while bringing a virtual camera up. Also not
  * declared in this toolchain's headers. */
@@ -515,6 +530,15 @@ static const VcamMediaStreamVtbl vcam_stream_vtbl = {
 /* Source                                                             */
 /* ------------------------------------------------------------------ */
 
+struct VcamSource;
+
+/* Shared layout of a sub-object interface: the vtable pointer has to be first,
+ * because that pointer *is* the interface the caller receives. */
+typedef struct VcamSubobject {
+	const void *lpVtbl;
+	struct VcamSource *owner;
+} VcamSubobject;
+
 struct VcamSource {
 	const VcamMediaSourceVtbl *lpVtbl;
 	LONG refcount;
@@ -525,6 +549,10 @@ struct VcamSource {
 	VcamStream *stream;
 	IMFAttributes *source_attributes;
 	IMFAttributes *stream_attributes;
+	/* The two extra interfaces, as COM sub-objects: the frame server asks for
+	 * them on the source, and one struct cannot have two vtables at offset 0. */
+	VcamSubobject get_service;
+	VcamSubobject ks_control;
 };
 
 static void source_destroy(VcamSource *self)
@@ -560,6 +588,14 @@ static HRESULT STDMETHODCALLTYPE source_query_interface(void *This, REFIID riid,
 		*out = self;
 		InterlockedIncrement(&self->refcount);
 		hr = S_OK;
+	} else if (IsEqualIID(riid, &kIID_IMFGetService)) {
+		*out = &self->get_service;
+		InterlockedIncrement(&self->refcount);
+		hr = S_OK;
+	} else if (IsEqualIID(riid, &kIID_IKsControl)) {
+		*out = &self->ks_control;
+		InterlockedIncrement(&self->refcount);
+		hr = S_OK;
 	}
 	vcam_log_iid("source QueryInterface", riid, hr);
 	return hr;
@@ -580,6 +616,81 @@ static ULONG STDMETHODCALLTYPE source_release(void *This)
 	}
 	return (ULONG)remaining;
 }
+
+/* --- the two extra interfaces ---------------------------------------------
+ * Read and written by nobody, answered by both. GetService is the source
+ * saying "no such service", not "no such interface": the difference is how a
+ * pipeline distinguishes an object that knows the protocol from one that has
+ * never heard of it. */
+static HRESULT STDMETHODCALLTYPE subobject_query_interface(void *This, REFIID riid, void **out)
+{
+	return source_query_interface(((VcamSubobject *)This)->owner, riid, out);
+}
+
+static ULONG STDMETHODCALLTYPE subobject_add_ref(void *This)
+{
+	return source_add_ref(((VcamSubobject *)This)->owner);
+}
+
+static ULONG STDMETHODCALLTYPE subobject_release(void *This)
+{
+	return source_release(((VcamSubobject *)This)->owner);
+}
+
+static HRESULT STDMETHODCALLTYPE source_get_service(void *This, REFGUID service, REFIID riid, void **out)
+{
+	(void)This;
+	(void)riid;
+	if (out)
+		*out = NULL;
+	vcam_log_iid("source GetService(service)", service, kMFUnsupportedService);
+	vcam_log("source GetService -> MF_E_UNSUPPORTED_SERVICE");
+	return kMFUnsupportedService;
+}
+
+static HRESULT STDMETHODCALLTYPE source_ks_property(void *This, void *property, ULONG property_length,
+                                                    void *data, ULONG data_length, ULONG *bytes_returned)
+{
+	(void)This; (void)property; (void)property_length; (void)data; (void)data_length;
+	if (bytes_returned)
+		*bytes_returned = 0;
+	vcam_log("source KsProperty -> ERROR_SET_NOT_FOUND");
+	return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+static HRESULT STDMETHODCALLTYPE source_ks_method(void *This, void *method, ULONG method_length,
+                                                  void *data, ULONG data_length, ULONG *bytes_returned)
+{
+	(void)This; (void)method; (void)method_length; (void)data; (void)data_length;
+	if (bytes_returned)
+		*bytes_returned = 0;
+	return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+static HRESULT STDMETHODCALLTYPE source_ks_event(void *This, void *event, ULONG event_length,
+                                                 void *data, ULONG data_length, ULONG *bytes_returned)
+{
+	(void)This; (void)event; (void)event_length; (void)data; (void)data_length;
+	if (bytes_returned)
+		*bytes_returned = 0;
+	return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+static const VcamGetServiceVtbl vcam_get_service_vtbl = {
+	.QueryInterface = subobject_query_interface,
+	.AddRef = subobject_add_ref,
+	.Release = subobject_release,
+	.GetService = source_get_service,
+};
+
+static const VcamKsControlVtbl vcam_ks_control_vtbl = {
+	.QueryInterface = subobject_query_interface,
+	.AddRef = subobject_add_ref,
+	.Release = subobject_release,
+	.KsProperty = source_ks_property,
+	.KsMethod = source_ks_method,
+	.KsEvent = source_ks_event,
+};
 
 static HRESULT STDMETHODCALLTYPE source_get_event(void *This, DWORD flags, IMFMediaEvent **event)
 {
@@ -914,6 +1025,10 @@ static HRESULT vcam_source_create(IUnknown *outer, REFIID riid, void **out)
 	self->lpVtbl = &vcam_source_vtbl;
 	self->refcount = 1;
 	self->state = 1;
+	self->get_service.lpVtbl = &vcam_get_service_vtbl;
+	self->get_service.owner = self;
+	self->ks_control.lpVtbl = &vcam_ks_control_vtbl;
+	self->ks_control.owner = self;
 	hr = MFCreateEventQueue(&self->queue);
 	if (FAILED(hr)) {
 		free(self);

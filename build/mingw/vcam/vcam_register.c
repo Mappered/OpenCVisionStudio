@@ -2,10 +2,13 @@
  * Registers (or removes) the virtual camera media source as a COM in-proc
  * server.
  *
- * Both registry roots are attempted and reported separately, because which one
- * the frame server actually reads is an open question: the frame server may run
- * in the user's session (HKCU is enough) or as a service (HKLM is required).
- * The probe output settles it.
+ * Both registry roots are attempted and reported separately, and that question
+ * is now settled: the frame server CoCreates the source inside its own service
+ * process, which cannot see HKCU. HKCU alone is enough for the in-process
+ * instance Media Foundation creates while configuring the camera, and that is
+ * why the trace looks healthy without elevation - but the service's own
+ * instance is what makes a camera appear, so HKLM is the one that matters.
+ * Measured: without it, IMFVirtualCamera::Start returns ERROR_PATH_NOT_FOUND.
  *
  * Usage:
  *   vcam_register register <path-to-vcamsource.dll>
@@ -34,25 +37,30 @@ static HRESULT set_string(HKEY root, const wchar_t *subkey, const wchar_t *name,
 	return HRESULT_FROM_WIN32(status);
 }
 
-static void register_root(HKEY root, const wchar_t *label, const wchar_t *dll_path)
+static HRESULT register_root(HKEY root, const wchar_t *label, const wchar_t *dll_path)
 {
 	wchar_t inproc[512];
-	HRESULT hr;
+	HRESULT hr, first_failure = S_OK;
 
 	swprintf(inproc, 512, L"%ls\\InprocServer32", kClsidKey);
 
 	hr = set_string(root, kClsidKey, NULL, kDescription);
 	printf("  %ls: class key   0x%08lx\n", label, (unsigned long)hr);
-	if (FAILED(hr))
-		return;
+	if (FAILED(hr)) {
+		first_failure = hr;
+		return first_failure;
+	}
 
 	hr = set_string(root, inproc, NULL, dll_path);
 	printf("  %ls: server path 0x%08lx\n", label, (unsigned long)hr);
-	if (FAILED(hr))
-		return;
+	if (FAILED(hr)) {
+		first_failure = hr;
+		return first_failure;
+	}
 
 	hr = set_string(root, inproc, L"ThreadingModel", L"Both");
 	printf("  %ls: threading   0x%08lx\n", label, (unsigned long)hr);
+	return hr;
 }
 
 static void unregister_root(HKEY root, const wchar_t *label)
@@ -91,9 +99,19 @@ int main(int argc, char **argv)
 		}
 		printf("registering %ls\n", dll_path);
 		printf("CLSID %ls\n", VCAM_SOURCE_CLSID_STRING);
-		register_root(HKEY_CURRENT_USER, L"HKCU", dll_path);
-		register_root(HKEY_LOCAL_MACHINE, L"HKLM", dll_path);
-		printf("VCAM_REGISTER action=register clsid=%ls\n", VCAM_SOURCE_CLSID_STRING);
+		{
+			HRESULT hkcu = register_root(HKEY_CURRENT_USER, L"HKCU", dll_path);
+			HRESULT hklm = register_root(HKEY_LOCAL_MACHINE, L"HKLM", dll_path);
+			printf("VCAM_REGISTER action=register clsid=%ls hkcu=0x%08lx hklm=0x%08lx\n",
+			       VCAM_SOURCE_CLSID_STRING, (unsigned long)hkcu, (unsigned long)hklm);
+			if (FAILED(hklm)) {
+				printf("warning: only the per-user registration succeeded. The frame\n"
+				       "  server activates the media source in its own service process,\n"
+				       "  which cannot read HKCU, so the camera will not appear until this\n"
+				       "  runs from an elevated prompt.\n");
+				return 1;
+			}
+		}
 		return 0;
 	}
 
