@@ -69,6 +69,11 @@ typedef struct VcamMediaStreamVtbl {
 	HRESULT (STDMETHODCALLTYPE *GetMediaSource)(void *This, IMFMediaSource **source);
 	HRESULT (STDMETHODCALLTYPE *GetStreamDescriptor)(void *This, IMFStreamDescriptor **descriptor);
 	HRESULT (STDMETHODCALLTYPE *RequestSample)(void *This, IUnknown *token);
+	/* IMFMediaStream2 {C5BC37D6-75C7-46A1-A132-81B5F723C20F}, which MinGW
+	 * does not declare at all. The frame server asks a stream for it, and a
+	 * stream that does not answer is a stream it cannot set running. */
+	HRESULT (STDMETHODCALLTYPE *SetStreamState)(void *This, DWORD state);
+	HRESULT (STDMETHODCALLTYPE *GetStreamState)(void *This, DWORD *state);
 } VcamMediaStreamVtbl;
 
 /* Two more interfaces the frame server asks a capture source for by name, and

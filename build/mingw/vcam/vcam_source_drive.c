@@ -209,6 +209,23 @@ int main(int argc, char **argv)
 		goto done;
 	}
 
+	{
+		/* The frame server asks a stream for IMFMediaStream2 before it will
+		 * set it running; asking the same question here is how that answer is
+		 * checked rather than assumed. (This toolchain's headers do not declare
+		 * the interface, so the IID is spelled out - the same value the media
+		 * source publishes.) */
+		static const GUID kIID_IMFMediaStream2 = {
+			0xC5BC37D6, 0x75C7, 0x46A1, { 0xA1, 0x32, 0x81, 0xB5, 0xF7, 0x23, 0xC2, 0x0F }
+		};
+		void *stream2 = NULL;
+		HRESULT qi = ((IUnknown *)stream)->lpVtbl->QueryInterface((IUnknown *)stream,
+		                                                          &kIID_IMFMediaStream2, &stream2);
+		printf("stream QueryInterface(IMFMediaStream2): 0x%08lx\n", (unsigned long)qi);
+		if (stream2)
+			((IUnknown *)stream2)->lpVtbl->Release((IUnknown *)stream2);
+	}
+
 	/* Ask for frames and read them back. */
 	for (i = 0; i < 3; i++) {
 		IMFMediaEvent *event = NULL;

@@ -89,6 +89,19 @@ static const GUID kIID_IKsControl = {
 	0x28F54685, 0x06FD, 0x11D2, { 0xB2, 0x7A, 0x00, 0xA0, 0xC9, 0x22, 0x31, 0x96 }
 };
 
+/* {C5BC37D6-75C7-46A1-A132-81B5F723C20F} IMFMediaStream2, from Microsoft's
+ * mfidl.h: IMFMediaStream plus SetStreamState/GetStreamState. */
+static const GUID kIID_IMFMediaStream2 = {
+	0xC5BC37D6, 0x75C7, 0x46A1, { 0xA1, 0x32, 0x81, 0xB5, 0xF7, 0x23, 0xC2, 0x0F }
+};
+
+/* MF_STREAM_STATE, from mfidl.h, spelled out so the vtable can be built
+ * whether or not this toolchain declares the enumeration. */
+#define VCAM_STREAM_STATE_STOPPED 0u
+#define VCAM_STREAM_STATE_PAUSED 1u
+#define VCAM_STREAM_STATE_RUNNING 2u
+#define VCAM_STREAM_STATE_SHUTDOWN 3u
+
 /* MF_E_UNSUPPORTED_SERVICE, from Microsoft's mferror.h. The macro may not exist
  * in this toolchain, so the value is spelled out either way and the two agree. */
 static const HRESULT kMFUnsupportedService = (HRESULT)0xC00D36BAL;
@@ -98,6 +111,14 @@ static LONG g_object_count = 0;
 
 typedef struct VcamSource VcamSource;
 typedef struct VcamStream VcamStream;
+
+/* Shared layout of a sub-object interface: the vtable pointer has to be first,
+ * because that pointer *is* the interface the caller receives. Declared here
+ * because both the stream and the source hand one out. */
+typedef struct VcamSubobject {
+	const void *lpVtbl;
+	void *owner;
+} VcamSubobject;
 
 /* ------------------------------------------------------------------ */
 /* Trace                                                              */
@@ -342,6 +363,8 @@ struct VcamStream {
 	/* The bus carries RGB32; the sample may have to be YUY2. Staging is heap
 	 * because two 1.2 MB buffers on the stack is what once overflowed it. */
 	BYTE *rgb32_frame;
+	/* The stream's own IKsControl, for the same reason the source has one. */
+	VcamSubobject ks_control;
 };
 
 static void stream_destroy(VcamStream *self)
@@ -378,6 +401,16 @@ static HRESULT STDMETHODCALLTYPE stream_query_interface(void *This, REFIID riid,
 		*out = self;
 		InterlockedIncrement(&self->refcount);
 		hr = S_OK;
+	} else if (IsEqualIID(riid, &kIID_IMFMediaStream2)) {
+		/* Same object, longer vtable: IMFMediaStream2 is IMFMediaStream plus two
+		 * methods, so the pointer is the stream's interface pointer. */
+		*out = self;
+		InterlockedIncrement(&self->refcount);
+		hr = S_OK;
+	} else if (IsEqualIID(riid, &kIID_IKsControl)) {
+		*out = &self->ks_control;
+		InterlockedIncrement(&self->refcount);
+		hr = S_OK;
 	}
 	vcam_log_iid("stream QueryInterface", riid, hr);
 	return hr;
@@ -398,6 +431,58 @@ static ULONG STDMETHODCALLTYPE stream_release(void *This)
 	}
 	return (ULONG)remaining;
 }
+
+/* The stream's IKsControl, forwarded to the stream for lifetime. */
+static HRESULT STDMETHODCALLTYPE stream_subobject_query_interface(void *This, REFIID riid, void **out)
+{
+	return stream_query_interface(((VcamSubobject *)This)->owner, riid, out);
+}
+
+static ULONG STDMETHODCALLTYPE stream_subobject_add_ref(void *This)
+{
+	return stream_add_ref(((VcamSubobject *)This)->owner);
+}
+
+static ULONG STDMETHODCALLTYPE stream_subobject_release(void *This)
+{
+	return stream_release(((VcamSubobject *)This)->owner);
+}
+
+static HRESULT STDMETHODCALLTYPE stream_ks_property(void *This, void *property, ULONG property_length,
+                                                    void *data, ULONG data_length, ULONG *bytes_returned)
+{
+	(void)This; (void)property; (void)property_length; (void)data; (void)data_length;
+	if (bytes_returned)
+		*bytes_returned = 0;
+	return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+static HRESULT STDMETHODCALLTYPE stream_ks_method(void *This, void *method, ULONG method_length,
+                                                  void *data, ULONG data_length, ULONG *bytes_returned)
+{
+	(void)This; (void)method; (void)method_length; (void)data; (void)data_length;
+	if (bytes_returned)
+		*bytes_returned = 0;
+	return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+static HRESULT STDMETHODCALLTYPE stream_ks_event(void *This, void *event, ULONG event_length,
+                                                 void *data, ULONG data_length, ULONG *bytes_returned)
+{
+	(void)This; (void)event; (void)event_length; (void)data; (void)data_length;
+	if (bytes_returned)
+		*bytes_returned = 0;
+	return HRESULT_FROM_WIN32(ERROR_SET_NOT_FOUND);
+}
+
+static const VcamKsControlVtbl vcam_stream_ks_control_vtbl = {
+	.QueryInterface = stream_subobject_query_interface,
+	.AddRef = stream_subobject_add_ref,
+	.Release = stream_subobject_release,
+	.KsProperty = stream_ks_property,
+	.KsMethod = stream_ks_method,
+	.KsEvent = stream_ks_event,
+};
 
 static HRESULT STDMETHODCALLTYPE stream_get_event(void *This, DWORD flags, IMFMediaEvent **event)
 {
@@ -447,6 +532,39 @@ static HRESULT STDMETHODCALLTYPE stream_get_stream_descriptor(void *This, IMFStr
 		return E_POINTER;
 	*descriptor = self->descriptor;
 	IMFStreamDescriptor_AddRef(*descriptor);
+	return S_OK;
+}
+
+/* IMFMediaStream2. The frame server sets a stream running this way instead of
+ * starting the whole source, so a stream that cannot answer leaves the camera
+ * unable to come up. */
+static HRESULT STDMETHODCALLTYPE stream_set_stream_state(void *This, DWORD state)
+{
+	VcamStream *self = (VcamStream *)This;
+	vcam_log("stream SetStreamState(%lu)", (unsigned long)state);
+	if (self->state == 4)
+		return MF_E_SHUTDOWN;
+	switch (state) {
+	case VCAM_STREAM_STATE_RUNNING:
+		self->state = 2;
+		return S_OK;
+	case VCAM_STREAM_STATE_STOPPED:
+		self->state = 1;
+		return S_OK;
+	default:
+		return MF_E_INVALID_STATE_TRANSITION;
+	}
+}
+
+static HRESULT STDMETHODCALLTYPE stream_get_stream_state(void *This, DWORD *state)
+{
+	VcamStream *self = (VcamStream *)This;
+	if (!state)
+		return E_POINTER;
+	if (self->state == 4)
+		return MF_E_SHUTDOWN;
+	*state = (self->state == 2) ? VCAM_STREAM_STATE_RUNNING :
+	         (self->state == 3) ? VCAM_STREAM_STATE_PAUSED : VCAM_STREAM_STATE_STOPPED;
 	return S_OK;
 }
 
@@ -569,20 +687,13 @@ static const VcamMediaStreamVtbl vcam_stream_vtbl = {
 	.GetMediaSource = stream_get_media_source,
 	.GetStreamDescriptor = stream_get_stream_descriptor,
 	.RequestSample = stream_request_sample,
+	.SetStreamState = stream_set_stream_state,
+	.GetStreamState = stream_get_stream_state,
 };
 
 /* ------------------------------------------------------------------ */
 /* Source                                                             */
 /* ------------------------------------------------------------------ */
-
-struct VcamSource;
-
-/* Shared layout of a sub-object interface: the vtable pointer has to be first,
- * because that pointer *is* the interface the caller receives. */
-typedef struct VcamSubobject {
-	const void *lpVtbl;
-	struct VcamSource *owner;
-} VcamSubobject;
 
 struct VcamSource {
 	const VcamMediaSourceVtbl *lpVtbl;
@@ -682,10 +793,12 @@ static ULONG STDMETHODCALLTYPE subobject_release(void *This)
 static HRESULT STDMETHODCALLTYPE source_get_service(void *This, REFGUID service, REFIID riid, void **out)
 {
 	(void)This;
-	(void)riid;
 	if (out)
 		*out = NULL;
 	vcam_log_iid("source GetService(service)", service, kMFUnsupportedService);
+	/* The interface it wanted is the informative half: a caller passing
+	 * GUID_NULL for the service is asking "do you have this interface?". */
+	vcam_log_iid("source GetService(wanted)", riid, kMFUnsupportedService);
 	vcam_log("source GetService -> MF_E_UNSUPPORTED_SERVICE");
 	return kMFUnsupportedService;
 }
@@ -693,6 +806,17 @@ static HRESULT STDMETHODCALLTYPE source_get_service(void *This, REFGUID service,
 static HRESULT STDMETHODCALLTYPE source_ks_property(void *This, void *property, ULONG property_length,
                                                     void *data, ULONG data_length, ULONG *bytes_returned)
 {
+	/* Log what was asked for: a KSPROPERTY is {Set, Id, Flags}, and which set
+	 * the pipeline asks about says what it expected this source to be. */
+	const unsigned char *raw = (const unsigned char *)property;
+	if (property && property_length >= 24) {
+		unsigned long id = 0, flags = 0;
+		memcpy(&id, raw + 16, sizeof(id));
+		memcpy(&flags, raw + 20, sizeof(flags));
+		vcam_log_iid("source KsProperty(set)", (const GUID *)property, S_OK);
+		vcam_log("source KsProperty id=%lu flags=%lu length=%lu",
+		         id, flags, (unsigned long)property_length);
+	}
 	(void)This; (void)property; (void)property_length; (void)data; (void)data_length;
 	if (bytes_returned)
 		*bytes_returned = 0;
@@ -901,6 +1025,8 @@ static HRESULT source_create_stream(VcamSource *self)
 	self->stream->refcount = 1;
 	self->stream->state = 1;
 	self->stream->source = self;
+	self->stream->ks_control.lpVtbl = &vcam_stream_ks_control_vtbl;
+	self->stream->ks_control.owner = self->stream;
 	self->stream->descriptor = self->stream_descriptor;
 	IMFStreamDescriptor_AddRef(self->stream_descriptor);
 	self->stream->frame_index = 0;
