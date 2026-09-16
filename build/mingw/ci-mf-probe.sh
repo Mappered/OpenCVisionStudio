@@ -182,6 +182,81 @@ echo "built $out_dir/vcamsource.dll"
 # outright: real frames reaching the media source, independent of whether this
 # Windows SKU's frame server will bring a software camera up.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# The publisher: the half that owns a camera. Built against the Aravis package
+# published to the artifacts branch, so CI exercises the SDK consumers will use,
+# and driven against Aravis' own fake GigE Vision camera - real GenICam
+# acquisition with no hardware.
+# ---------------------------------------------------------------------------
+echo '=== publisher: Aravis package from the artifacts branch ==='
+pacman -S --noconfirm --needed --disable-download-timeout unzip >/dev/null 2>&1 || true
+git fetch --quiet --depth 1 origin artifacts
+aravis_zip="$repo_root/build/aravis-package.zip"
+git show origin/artifacts:aravis/0.9.3/win-x64/aravis-0.9.3-win-x64.zip > "$aravis_zip"
+sdk="$repo_root/build/aravis-sdk"
+rm -rf "$sdk"
+mkdir -p "$sdk"
+( cd "$sdk" && unzip -qo "$aravis_zip" )
+echo "extracted $(find "$sdk" -type f | wc -l) files"
+
+gcc -O1 -Wall -Wextra -DVCAM_WITH_ARAVIS -o "$out_dir/vcam-publisher.exe" \
+	"$vcam_dir/vcam_publisher.c" "$vcam_dir/framebus.c" \
+	-I"$sdk/include" -I"$sdk/lib/glib-2.0/include" -L"$sdk/lib" \
+	-laravis-0.10 -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 \
+	-lxml2 -lusb-1.0 -lz -lws2_32 -liphlpapi
+echo "built $out_dir/vcam-publisher.exe"
+
+# The publisher's DLLs come from the package; the fake camera tool is in its bin.
+export PATH="$sdk/bin:$PATH"
+
+echo '--- synthetic publish in one process, verify in another ---'
+"$out_dir/vcam-publisher.exe" --synthetic --frames 3 --hold 8000 2>&1 | tee "$out_dir/publisher-synthetic.log" &
+publisher_pid=$!
+sleep 2
+"$out_dir/vcam-publisher.exe" --verify 2>&1 | tee "$out_dir/publisher-verify.log" || true
+wait $publisher_pid || true
+publisher_line=$(grep '^PUBLISHER ' "$out_dir/publisher-synthetic.log" | tail -n1 || true)
+verify_line=$(grep '^PUBLISHER_VERIFY ' "$out_dir/publisher-verify.log" | tail -n1 || true)
+echo "publisher line: ${publisher_line:-none}"
+echo "verify line: ${verify_line:-none}"
+
+echo '--- Aravis: devices before the fake camera ---'
+"$out_dir/vcam-publisher.exe" --list 2>&1 | tee "$out_dir/publisher-list-before.log" || true
+
+echo '--- Aravis fake GigE Vision camera ---'
+fake_tool=$(command -v arv-fake-gv-camera-0.10.exe || true)
+if [ -n "$fake_tool" ]; then
+	"$fake_tool" 2>&1 | tee "$out_dir/fake-camera.log" &
+	fake_pid=$!
+	sleep 5
+	"$out_dir/vcam-publisher.exe" --list 2>&1 | tee "$out_dir/publisher-list-after.log" || true
+	echo '--- acquiring frames from the fake camera ---'
+	"$out_dir/vcam-publisher.exe" --aravis --frames 5 2>&1 | tee "$out_dir/publisher-aravis.log" || true
+	aravis_line=$(grep '^PUBLISHER source=aravis ' "$out_dir/publisher-aravis.log" | tail -n1 || true)
+	kill "$fake_pid" 2>/dev/null || true
+else
+	echo 'warning: arv-fake-gv-camera-0.10.exe not found in the package'
+	aravis_line="missing fake camera tool"
+fi
+echo "aravis line: ${aravis_line:-none}"
+
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+	{
+		echo ''
+		echo '### Publisher'
+		echo ''
+		echo '```'
+		echo "${publisher_line:-PUBLISHER (no output)}"
+		echo "${verify_line:-PUBLISHER_VERIFY (no output)}"
+		echo "${aravis_line:-PUBLISHER source=aravis (no output)}"
+		echo '```'
+		echo ''
+		echo 'verify ok=1 means one process published through shared memory and another'
+		echo 'read the frame back with its tag and geometry intact. An aravis line with'
+		echo 'published>0 means frames came off a GigE Vision camera through Aravis.'
+	} >> "$GITHUB_STEP_SUMMARY"
+fi
+
 echo '=== frame bus round trip ==='
 # Checked inside vcam-read.exe rather than as a separate binary: the round trip
 # is what matters, and a separate test executable would not start on this
