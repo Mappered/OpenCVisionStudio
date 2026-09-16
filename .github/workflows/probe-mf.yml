@@ -112,7 +112,9 @@ jobs:
           }
           # The trace from the CI run, kept as an example of what the frame server
           # does with the media source; the file the client machines write is
-          # vcamsource.dll.log, next to the DLL.
+          # vcamsource.dll.log, next to the DLL. A trace left there by an earlier
+          # kit would otherwise look like the client's own run.
+          Remove-Item (Join-Path $dir 'vcamsource.dll.log') -Force -ErrorAction SilentlyContinue
           Copy-Item (Join-Path $out 'vcamsource.dll.log') (Join-Path $dir 'vcamsource.dll.log.from-ci.txt') -Force -ErrorAction SilentlyContinue
 
           # The kit is a flat directory on purpose: Windows searches the

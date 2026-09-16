@@ -218,10 +218,23 @@ gcc -O1 -Wall -Wextra -DVCAM_WITH_ARAVIS -o "$out_dir/vcam-publisher.exe" \
 echo "built $out_dir/vcam-publisher.exe"
 
 echo '--- pkg-config from the package alone ---'
-PKG_CONFIG_PATH="$sdk/lib/pkgconfig" pkg-config --modversion "aravis-$api" 2>/dev/null \
-	|| echo "warning: pkg-config cannot see aravis-$api in the package"
-PKG_CONFIG_PATH="$sdk/lib/pkgconfig" pkg-config --cflags --libs "aravis-$api" 2>/dev/null \
-	|| echo "warning: pkg-config produced no flags for aravis-$api"
+# The package README documents pkg-config as one of the two ways to consume it,
+# so that claim is checked rather than assumed. MSYS2 does not always ship
+# pkg-config, and without it this would look like a defect in the package.
+pacman -S --noconfirm --needed --disable-download-timeout mingw-w64-x86_64-pkgconf \
+	>/dev/null 2>&1 || true
+if command -v pkg-config >/dev/null 2>&1; then
+	if PKG_CONFIG_PATH="$sdk/lib/pkgconfig" pkg-config --exists "aravis-$api"; then
+		echo "ok   pkg-config version $(PKG_CONFIG_PATH="$sdk/lib/pkgconfig" pkg-config --modversion "aravis-$api")"
+		PKG_CONFIG_PATH="$sdk/lib/pkgconfig" pkg-config --cflags --libs "aravis-$api"
+	else
+		echo "error: pkg-config cannot resolve aravis-$api from the package" >&2
+		ls -l "$sdk/lib/pkgconfig/" >&2 || true
+		exit 1
+	fi
+else
+	echo 'note: no pkg-config on this runner, skipping that check'
+fi
 
 # Next to the executables, so the loader finds them: the package's DLLs and
 # MSYS2's glib are the same MinGW build, but only the ones in the executable's
