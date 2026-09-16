@@ -366,6 +366,23 @@ MSYS2_ARG_CONV_EXCL='*' reg.exe add \
 	&& echo 'ok   HKCU NonPackaged consent = Allow' \
 	|| echo 'note: NonPackaged consent store not writable'
 
+# The frame server is the process that is supposed to load the media source, and
+# it is a service. On a runner it is no more started than the privacy policy was
+# permissive, so it is started here and its state reported: if the camera fails
+# while the service is up, the failure is ours; if the service cannot run at
+# all, nothing about the media source can be concluded from this machine.
+echo '=== frame server services ==='
+for service in FrameServer FrameServerMonitor; do
+	if sc.exe query "$service" 2>/dev/null | grep -q RUNNING; then
+		echo "ok   $service already running"
+	else
+		MSYS2_ARG_CONV_EXCL='*' net.exe start "$service" >/dev/null 2>&1 \
+			&& echo "ok   $service started" \
+			|| echo "note: $service could not be started"
+	fi
+	sc.exe query "$service" 2>/dev/null | grep -i 'STATE' | sed 's/^[[:space:]]*/  /' || true
+done
+
 echo '=== registering the media source CLSID ==='
 gcc -O1 -Wall -Wextra -o "$out_dir/vcam-register.exe" "$vcam_dir/vcam_register.c" -lole32 -luuid -ladvapi32
 "$out_dir/vcam-register.exe" register "$out_dir/vcamsource.dll" 2>&1 | tee "$out_dir/vcam-register.log" || true
@@ -425,6 +442,11 @@ if [ -f "$sdk/bin/arv-fake-gv-camera-0.10.exe" ] && [ -f "$out_dir/vcam-publishe
 	# question at this point, so the trace is printed in full.
 	echo '--- media source trace (live) ---'
 	if [ -f "$out_dir/vcamsource.dll.log" ]; then
+		# One line per process that loaded the DLL. The frame server service is
+		# the process that matters: without an entry for it, the pipeline never
+		# got as far as asking the service to instantiate the media source.
+		echo '--- processes that loaded the media source ---'
+		grep 'media source loaded' "$out_dir/vcamsource.dll.log" | sed 's/^/  /' || true
 		cat "$out_dir/vcamsource.dll.log"
 	else
 		echo '(no trace)'
