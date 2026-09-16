@@ -347,6 +347,25 @@ if command -v ldd >/dev/null 2>&1; then
 	echo "${non_system:-none}"
 fi
 
+# The virtual camera API is subject to the webcam privacy control, and the CI
+# images ship with camera access denied, which is what made Start return
+# E_ACCESSDENIED here while the same call on a client returned a different
+# error. The runner is elevated, so the policy can be set from the script:
+# without this the run cannot distinguish "our source is wrong" from "this
+# machine is not allowed to have a camera".
+echo '=== camera privacy: allow desktop applications ==='
+for hive in 'HKCU' 'HKLM'; do
+	key="$hive\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\CapabilityAccessManager\\ConsentStore\\webcam"
+	MSYS2_ARG_CONV_EXCL='*' reg.exe add "$key" /v Value /t REG_SZ /d Allow /f >/dev/null 2>&1 \
+		&& echo "ok   $hive webcam consent = Allow" \
+		|| echo "note: $hive consent store not writable"
+done
+MSYS2_ARG_CONV_EXCL='*' reg.exe add \
+	'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\webcam\NonPackaged' \
+	/v Value /t REG_SZ /d Allow /f >/dev/null 2>&1 \
+	&& echo 'ok   HKCU NonPackaged consent = Allow' \
+	|| echo 'note: NonPackaged consent store not writable'
+
 echo '=== registering the media source CLSID ==='
 gcc -O1 -Wall -Wextra -o "$out_dir/vcam-register.exe" "$vcam_dir/vcam_register.c" -lole32 -luuid -ladvapi32
 "$out_dir/vcam-register.exe" register "$out_dir/vcamsource.dll" 2>&1 | tee "$out_dir/vcam-register.log" || true
@@ -372,6 +391,56 @@ if [ -f "$out_dir/vcamsource.dll.log" ]; then
 	cat "$out_dir/vcamsource.dll.log"
 else
 	echo '(no trace: the media source was never loaded)'
+fi
+
+# ---------------------------------------------------------------------------
+# The whole chain in one window: a camera through Aravis, the publisher writing
+# the frame bus, and the frame server reading that bus out of the media source
+# into a different process. The media source falls back to its own pattern when
+# nobody is publishing, so the only way to show the camera's pixels made it end
+# to end is to have the publisher live while the reader runs - and to read the
+# trace, which says which of the two the stream is using.
+# ---------------------------------------------------------------------------
+echo '=== Aravis through the media source, live ==='
+if [ -f "$sdk/bin/arv-fake-gv-camera-0.10.exe" ] && [ -f "$out_dir/vcam-publisher.exe" ]; then
+	"$sdk/bin/arv-fake-gv-camera-0.10.exe" >/dev/null 2>&1 &
+	fake_pid2=$!
+	sleep 5
+	"$out_dir/vcam-publisher.exe" --aravis --seconds 14 2>&1 | tee "$out_dir/publisher-for-reader.log" &
+	publisher_for_reader=$!
+	sleep 4
+	# Fresh trace, so what follows is only this run.
+	rm -f "$out_dir/vcamsource.dll.log"
+	"$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read-live.log" || true
+	wait "$publisher_for_reader" || true
+	kill "$fake_pid2" 2>/dev/null || true
+
+	live_read_line=$(grep '^VCAM_READ ' "$out_dir/vcam-read-live.log" | tail -n1 || true)
+	bus_line=$(grep 'frame bus' "$out_dir/vcamsource.dll.log" 2>/dev/null | tail -n1 || true)
+	live_publisher_line=$(grep '^PUBLISHER source=aravis ' "$out_dir/publisher-for-reader.log" | tail -n1 || true)
+	echo "live read line: ${live_read_line:-none}"
+	echo "media source bus line: ${bus_line:-none}"
+	echo "publisher line: ${live_publisher_line:-none}"
+
+	if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+		{
+			echo ''
+			echo '### Aravis through the media source'
+			echo ''
+			echo '```'
+			echo "${live_publisher_line:-publisher (no output)}"
+			echo "${live_read_line:-VCAM_READ (no output)}"
+			echo "${bus_line:-media source trace (no output)}"
+			echo '```'
+			echo ''
+			echo 'The publisher line says frames came off a GigE Vision camera. The trace'
+			echo 'line says the media source took them from the frame bus rather than'
+			echo 'generating its own pattern, and the read line says a different process'
+			echo 'pulled one through the frame server.'
+		} >> "$GITHUB_STEP_SUMMARY"
+	fi
+else
+	echo 'skipping: the fake camera or the publisher is missing'
 fi
 
 echo '=== unregistering (leave the runner clean) ==='
