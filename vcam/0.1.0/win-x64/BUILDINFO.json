@@ -4,10 +4,10 @@
   "platform": "win-x64",
   "modules": "IMFActivate media source, IMFMediaSourceEx, RGB32 640x480",
   "toolchain": "x86_64-w64-mingw32, gcc 16.2.0 (see the probe run for exact versions)",
-  "built_utc": "2026-09-16T00:10:07Z",
-  "source_commit": "b0c785f234b1e7ac32481201586e71977289cfa2",
+  "built_utc": "2026-09-16T00:12:45Z",
+  "source_commit": "e6d23e1f4285d3a71c8f30c8827d3f900bf50fbb",
   "source_ref": "workflows",
   "subtree_tree": "n/a (this package is not built from a vendored subtree)",
-  "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35038747317",
+  "run_url": "https://github.com/Mappered/OpenCVisionStudio/actions/runs/35038910582",
   "dependencies": {}
 }
