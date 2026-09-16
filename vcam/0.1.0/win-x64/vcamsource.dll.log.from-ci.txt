@@ -1,4 +1,4 @@
---- media source loaded in pid 2540 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-read.exe), thread 3516 ---
+--- media source loaded in pid 9088 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-read.exe), thread 832 ---
 DllGetClassObject IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
 factory QueryInterface IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
 activator QueryInterface (other) {7fee9e9a-4a89-47a6-899c-b6a53a70fb67} -> 0x00000000
@@ -17,6 +17,7 @@ source QueryInterface IMFMediaSource {279a808d-aec7-40c8-9c6b-a6b492c78a66} -> 0
 source QueryInterface IMFMediaSourceEx {3c9b2eb9-86d5-4514-a394-f56664f9f0d8} -> 0x00000000
 source QueryInterface IMFGetService {fa993888-4383-415a-a930-dd472a8cf6f7} -> 0x00000000
 source GetService(service) (other) {00000000-0000-0000-0000-000000000000} -> 0xc00d36ba
+source GetService(wanted) (other) {2032c7ef-76f6-492a-94f3-4a81f69380cc} -> 0xc00d36ba
 source GetService -> MF_E_UNSUPPORTED_SERVICE
 source CreatePresentationDescriptor -> 0x00000000 (640x480 YUY2 + RGB32)
 source GetStreamAttributes(stream=0) -> 0x00000000
@@ -29,15 +30,18 @@ source GetSourceAttributes -> 0x00000000
 source QueryInterface IUnknown {00000000-0000-0000-c000-000000000046} -> 0x00000000
 source QueryInterface IMFGetService {fa993888-4383-415a-a930-dd472a8cf6f7} -> 0x00000000
 source GetService(service) (other) {00000000-0000-0000-0000-000000000000} -> 0xc00d36ba
+source GetService(wanted) (other) {b91ebfee-ca03-4af4-8a82-a31752f4a0fc} -> 0xc00d36ba
 source GetService -> MF_E_UNSUPPORTED_SERVICE
 source QueryInterface (other) {28f54685-06fd-11d2-b27a-00a0c9223196} -> 0x00000000
+source KsProperty(set) (other) {c6e13370-30ac-11d0-a18c-00a0c9118956} -> 0x00000000
+source KsProperty id=8 flags=1 length=24
 source KsProperty -> ERROR_SET_NOT_FOUND
 source Shutdown
 source Shutdown -> S_OK
 source QueryInterface IMFMediaSource {279a808d-aec7-40c8-9c6b-a6b492c78a66} -> 0x00000000
 source Shutdown
 source Shutdown -> MF_E_SHUTDOWN (was already shut down)
---- media source loaded in pid 2732 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-sourcedrive.exe), thread 3008 ---
+--- media source loaded in pid 2768 (D:\a\OpenCVisionStudio\OpenCVisionStudio\build\mf-probe\vcam-sourcedrive.exe), thread 6196 ---
 DllGetClassObject IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
 factory QueryInterface IClassFactory {00000001-0000-0000-c000-000000000046} -> 0x00000000
 activator QueryInterface (other) {7fee9e9a-4a89-47a6-899c-b6a53a70fb67} -> 0x00000000
@@ -54,6 +58,7 @@ source Start -> 0x00000000
 source QueryInterface IMFMediaEventGenerator {2cd0bd52-bcd5-4b89-b62c-eadc0c031e7d} -> 0x00000000
 source GetEvent -> 0x00000000
 stream QueryInterface IMFMediaStream {d182108f-4ec6-443f-aa42-a71106ec825f} -> 0x00000000
+stream QueryInterface (other) {c5bc37d6-75c7-46a1-a132-81b5f723c20f} -> 0x00000000
 stream RequestSample (#0)
 stream: frame bus attached (real frames)
 stream GetEvent -> 0x00000000
