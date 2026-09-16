@@ -203,7 +203,9 @@ echo "extracted $(find "$sdk" -type f | wc -l) files"
 
 gcc -O1 -Wall -Wextra -DVCAM_WITH_ARAVIS -o "$out_dir/vcam-publisher.exe" \
 	"$vcam_dir/vcam_publisher.c" "$vcam_dir/framebus.c" \
-	-I"$sdk/include" -I"$sdk/lib/glib-2.0/include" -L"$sdk/lib" \
+	-I"$sdk/include/aravis-0.10" -I"$sdk/include/glib-2.0" -I"$sdk/include" \
+	-I"$sdk/include/libxml2" -I"$sdk/include/libusb-1.0" \
+	-I"$sdk/lib/glib-2.0/include" -L"$sdk/lib" \
 	-laravis-0.10 -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 \
 	-lxml2 -lusb-1.0 -lz -lws2_32 -liphlpapi
 echo "built $out_dir/vcam-publisher.exe"
