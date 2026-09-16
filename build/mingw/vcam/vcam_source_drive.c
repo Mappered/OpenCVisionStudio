@@ -25,6 +25,7 @@
 #include <mfidl.h>
 #include <mfobjects.h>
 #include <mferror.h>
+#include <propidl.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -54,10 +55,16 @@ static void fill_marked(unsigned char *pixels, unsigned long long index)
  * Media Foundation hands a stream to whoever started the source. */
 static IMFMediaStream *stream_from_event(IMFMediaEvent *event)
 {
+	PROPVARIANT value;
 	IMFMediaStream *stream = NULL;
-	if (SUCCEEDED(IMFMediaEvent_GetUnknown(event, &IID_IMFMediaStream, (void **)&stream)))
-		return stream;
-	return NULL;
+
+	PropVariantInit(&value);
+	if (SUCCEEDED(IMFMediaEvent_GetValue(event, &value)) && value.vt == VT_UNKNOWN &&
+	    value.punkVal)
+		value.punkVal->lpVtbl->QueryInterface(value.punkVal, &IID_IMFMediaStream,
+		                                      (void **)&stream);
+	PropVariantClear(&value);
+	return stream;
 }
 
 int main(int argc, char **argv)
@@ -68,7 +75,6 @@ int main(int argc, char **argv)
 	IMFPresentationDescriptor *descriptor = NULL;
 	IMFMediaEventGenerator *source_events = NULL;
 	IMFMediaStream *stream = NULL;
-	IMFMediaStream *stream_from_descriptor = NULL;   /* only for the sanity check */
 	IMFStreamDescriptor *stream_descriptor = NULL;
 	IMFMediaTypeHandler *handler = NULL;
 	IMFMediaType *media_type = NULL;
@@ -141,8 +147,12 @@ int main(int argc, char **argv)
 	if (FAILED(hr))
 		goto done;
 
-	if (FAILED(IMFPresentationDescriptor_GetStreamDescriptorByIndex(descriptor, 0, NULL,
-	                                                                &stream_descriptor)) ||
+	{
+		BOOL selected = FALSE;
+		hr = IMFPresentationDescriptor_GetStreamDescriptorByIndex(descriptor, 0, &selected,
+		                                                          &stream_descriptor);
+	}
+	if (FAILED(hr) ||
 	    FAILED(IMFStreamDescriptor_GetMediaTypeHandler(stream_descriptor, &handler)) ||
 	    FAILED(IMFMediaTypeHandler_GetCurrentMediaType(handler, &media_type))) {
 		printf("SOURCE_DRIVE ok=0 stage=media_type\n");
@@ -190,10 +200,12 @@ int main(int argc, char **argv)
 		IMFMediaEvent *event = NULL;
 		IMFSample *sample = NULL;
 		IMFMediaBuffer *buffer = NULL;
+		PROPVARIANT value;
 		MediaEventType type = 0;
 		BYTE *data = NULL;
 		DWORD length = 0;
 
+		PropVariantInit(&value);
 		if (FAILED(IMFMediaStream_RequestSample(stream, NULL))) {
 			printf("  RequestSample %u failed\n", i);
 			break;
@@ -209,7 +221,10 @@ int main(int argc, char **argv)
 			IMFMediaEvent_Release(event);
 			continue;
 		}
-		if (SUCCEEDED(IMFMediaEvent_GetUnknown(event, &IID_IMFSample, (void **)&sample)) &&
+		if (SUCCEEDED(IMFMediaEvent_GetValue(event, &value)) && value.vt == VT_UNKNOWN &&
+		    value.punkVal &&
+		    SUCCEEDED(value.punkVal->lpVtbl->QueryInterface(value.punkVal, &IID_IMFSample,
+		                                                   (void **)&sample)) &&
 		    SUCCEEDED(IMFSample_GetBufferByIndex(sample, 0, &buffer)) &&
 		    SUCCEEDED(IMFMediaBuffer_Lock(buffer, &data, NULL, &length))) {
 			if (samples == 0) {
@@ -219,6 +234,7 @@ int main(int argc, char **argv)
 			samples++;
 			IMFMediaBuffer_Unlock(buffer);
 		}
+		PropVariantClear(&value);
 		if (buffer)
 			IMFMediaBuffer_Release(buffer);
 		if (sample)
@@ -236,8 +252,6 @@ int main(int argc, char **argv)
 	printf("SOURCE_DRIVE ok=%d samples=%u bus=%d\n", ok, samples, bus_ready);
 
 done:
-	if (stream_from_descriptor)
-		IMFMediaStream_Release(stream_from_descriptor);
 	if (stream)
 		IMFMediaStream_Release(stream);
 	if (source_events)
