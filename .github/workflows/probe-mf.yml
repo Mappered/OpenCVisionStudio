@@ -105,18 +105,98 @@ jobs:
           $dir = Join-Path $checkout ($dest -replace '/', '\')
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
-          foreach ($file in @('vcamsource.dll', 'vcam-register.exe', 'vcam-read.exe')) {
+          foreach ($file in @('vcamsource.dll', 'vcam-register.exe', 'vcam-read.exe', 'vcam-publisher.exe')) {
             $from = Join-Path $out $file
             if (-not (Test-Path $from)) { throw "missing $file - the probe did not build it" }
             Copy-Item $from $dir -Force
           }
-          Copy-Item (Join-Path $out 'vcamsource.dll.log') $dir -Force -ErrorAction SilentlyContinue
+          # The trace from the CI run, kept as an example of what the frame server
+          # does with the media source; the file the client machines write is
+          # vcamsource.dll.log, next to the DLL.
+          Copy-Item (Join-Path $out 'vcamsource.dll.log') (Join-Path $dir 'vcamsource.dll.log.from-ci.txt') -Force -ErrorAction SilentlyContinue
+
+          # The kit is a flat directory on purpose: Windows searches the
+          # executables' own directory first, so every DLL Aravis and its
+          # dependencies need has to travel with them.
+          $sdkBin = Join-Path $PWD 'build\aravis-sdk\bin'
+          if (-not (Test-Path $sdkBin)) { throw "missing $sdkBin - the publisher build did not extract the package" }
+          Copy-Item (Join-Path $sdkBin '*.dll') $dir -Force
+          foreach ($tool in @('arv-tool-0.10.exe', 'arv-fake-gv-camera-0.10.exe')) {
+            Copy-Item (Join-Path $sdkBin $tool) $dir -Force -ErrorAction SilentlyContinue
+          }
+          $arv = Get-ChildItem -Path $dir -Filter 'libaravis-*.dll'
+          if ($arv.Count -eq 0) { throw 'the Aravis runtime DLL did not make it into the kit' }
+          Write-Host ("kit: {0} files, {1:N1} MB" -f (Get-ChildItem $dir).Count,
+                       ((Get-ChildItem $dir | Measure-Object Length -Sum).Sum / 1MB))
+
+          # Two client scripts, so the kit is usable without reading this file.
+          $live = @(
+            '@echo off',
+            'setlocal EnableExtensions',
+            'cd /d "%~dp0"',
+            '',
+            'rem The frame server reads the media source registration from HKLM, so',
+            'rem this has to run elevated.',
+            'net session >nul 2>&1',
+            'if errorlevel 1 (',
+            '  echo Requesting elevation: the media source is registered in HKLM.',
+            '  powershell -NoProfile -Command "Start-Process -FilePath ''%~f0'' -Verb RunAs"',
+            '  exit /b',
+            ')',
+            '',
+            'echo [1/3] registering the media source',
+            'vcam-register.exe register "%~dp0vcamsource.dll" || goto :failed',
+            '',
+            'echo.',
+            'echo [2/3] cameras Aravis can see',
+            'vcam-publisher.exe --list',
+            '',
+            'echo.',
+            'echo [3/3] publishing frames in a separate window',
+            'rem Optional first argument: the camera index from the list above.',
+            'set VCAM_DEVICE=%~1',
+            'powershell -NoProfile -Command "Start-Process -FilePath ''%~dp0vcam-publisher.exe'' -WorkingDirectory ''%~dp0'' -ArgumentList ''--aravis'',''--run'',$env:VCAM_DEVICE"',
+            'if errorlevel 1 goto :failed',
+            '',
+            'echo.',
+            'echo Now open the Windows Camera app and pick "OpenCVisionStudio Virtual Camera".',
+            'echo The publisher window shows the frame rate; close it or run run-stop.cmd',
+            'echo when you are done.',
+            'exit /b 0',
+            '',
+            ':failed',
+            'echo something went wrong - see the messages above.',
+            'pause',
+            'exit /b 1'
+          )
+          $live | Set-Content (Join-Path $dir 'run-live.cmd') -Encoding ascii
+
+          $stop = @(
+            '@echo off',
+            'setlocal EnableExtensions',
+            'cd /d "%~dp0"',
+            '',
+            'rem Stopping the publisher and removing the registration both need the',
+            'rem elevation the publisher was started with.',
+            'net session >nul 2>&1',
+            'if errorlevel 1 (',
+            '  powershell -NoProfile -Command "Start-Process -FilePath ''%~f0'' -Verb RunAs"',
+            '  exit /b',
+            ')',
+            '',
+            'echo stopping the publisher',
+            'taskkill /IM vcam-publisher.exe /F >nul 2>&1',
+            'echo unregistering the media source',
+            'vcam-register.exe unregister',
+            'pause'
+          )
+          $stop | Set-Content (Join-Path $dir 'run-stop.cmd') -Encoding ascii
 
           $buildinfo = [ordered]@{
             package      = 'vcam'
             version      = '0.1.0'
             platform     = '${{ env.PLATFORM_TAG }}'
-            modules      = 'IMFActivate media source, IMFMediaSourceEx, RGB32 640x480'
+            modules      = 'IMFActivate media source, IMFMediaSourceEx, RGB32 640x480; Aravis publisher (GigE Vision/USB3 Vision) over the shared-memory frame bus'
             toolchain    = 'x86_64-w64-mingw32, gcc 16.2.0 (see the probe run for exact versions)'
             built_utc    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
             source_commit= '${{ github.sha }}'
@@ -128,36 +208,60 @@ jobs:
           $buildinfo | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $dir 'BUILDINFO.json') -Encoding utf8
 
           $readme = @(
-            'OpenCVisionStudio virtual camera - test kit',
-            '==========================================',
+            'OpenCVisionStudio virtual camera - Aravis to webcam kit',
+            '======================================================',
             '',
             'What this is',
             '  A Windows 11 user-mode virtual camera. A media source (vcamsource.dll)',
             '  is registered under a CLSID; the virtual camera names that CLSID as its',
-            '  source id, and Media Foundation activates it to pull frames. Frames are',
-            '  generated synthetically for now; the Aravis frame bus replaces the',
-            '  generator behind the same interfaces.',
+            '  source id, and Media Foundation activates it to pull frames.',
             '',
-            'How to run it (Windows 11, elevated command prompt)',
-            '  1. vcam-register.exe register vcamsource.dll',
-            '     Registers the media source under HKCU and HKLM. The frame server',
-            '     reads HKLM, so elevation is required.',
-            '  2. vcam-read.exe',
-            '     Creates the virtual camera, starts it, enumerates Media Foundation',
-            '     devices, reads one frame, then removes the camera again.',
-            '  3. Open the Windows Camera app while vcam-read.exe is running and look',
-            '     for "OpenCVisionStudio Virtual Camera".',
-            '  4. vcam-register.exe unregister      (cleanup)',
+            '  Frames come from a camera. vcam-publisher.exe owns it through Aravis',
+            '  (GigE Vision and USB3 Vision) and writes frames into a shared-memory',
+            '  bus; the media source reads that bus from inside the frame server. If',
+            '  nothing is publishing, the media source generates its own pattern, so',
+            '  the camera still comes up on a machine with no camera attached.',
+            '',
+            'Live camera as a webcam (Windows 11)',
+            '  1. run-live.cmd',
+            '     Asks for elevation, registers the media source, lists the cameras',
+            '     Aravis can see, and starts publishing in its own window. Give it a',
+            '     camera index to pick a specific one:  run-live.cmd 1',
+            '  2. Open the Windows Camera app and choose "OpenCVisionStudio Virtual',
+            '     Camera". Frames, resolution and frame rate are shown in the',
+            '     publisher window.',
+            '  3. run-stop.cmd when you are done: stops the publisher and removes the',
+            '     registration again.',
+            '',
+            'Testing without a camera',
+            '  vcam-publisher.exe --synthetic --run',
+            '  publishes generated frames through the same path, so the webcam can be',
+            '  opened before a camera is on the desk. Nothing else changes.',
+            '',
+            'Other pieces of the kit',
+            '  vcam-read.exe        creates the camera, starts it, enumerates Media',
+            '                       Foundation devices, reads one frame, removes the',
+            '                       camera. This is what CI runs; useful as a check.',
+            '  vcam-register.exe    register/unregister the media source by hand.',
+            '  arv-tool-0.10.exe    Aravis own tool: "arv-tool-0.10.exe list" shows',
+            '                       what the GV/USB3 stack sees.',
+            '  arv-fake-gv-camera-0.10.exe',
+            '                       a fake GigE Vision camera, for a machine with no',
+            '                       camera at all. Start it, then run-live.cmd.',
             '',
             'Reading the result',
-            '  * "IMFVirtualCamera::Start: 0x00000000" plus "VCAM_READ ... sample_bytes=16384"',
-            '    means the whole path works: the camera was published and delivered a frame.',
+            '  * The publisher window printing "aravis: N frames in M ms (X fps)" means',
+            '    a real camera is streaming into the bus.',
             '  * The media source runs inside the frame server process, so it traces to',
-            '    vcamsource.dll.log next to the DLL. That file names every call the frame',
-            '    server makes into it.',
+            '    vcamsource.dll.log next to the DLL. That file names every call the',
+            '    frame server makes into it, and whether the bus was found.',
+            '  * Camera images are scaled to the camera geometry the media source',
+            '    advertises (640x480 RGB32) with the aspect ratio preserved, so a',
+            '    512x512 or 1920x1080 sensor arrives letterboxed rather than sheared.',
+            '  * vcamsource.dll.log.from-ci.txt is the trace from the CI run.',
             '  * On a Windows Server SKU the frame server faults inside its own',
             '    FrameServerMonitorClient.dll before the camera comes up. That is a',
-            '    platform gap, not a defect in this kit: run it on a Windows 11 client.'
+            '    platform gap, not a defect in this kit: run it on Windows 11.'
           )
           $readme | Set-Content (Join-Path $dir 'README.txt') -Encoding utf8
 

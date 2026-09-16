@@ -189,9 +189,7 @@ echo "built $out_dir/vcamsource.dll"
 # acquisition with no hardware.
 # ---------------------------------------------------------------------------
 echo '=== publisher: Aravis package from the artifacts branch ==='
-pacman -S --noconfirm --needed --disable-download-timeout \
-	unzip mingw-w64-x86_64-glib2 mingw-w64-x86_64-libxml2 mingw-w64-x86_64-libusb \
-	>/dev/null 2>&1 || true
+pacman -S --noconfirm --needed --disable-download-timeout unzip >/dev/null 2>&1 || true
 aravis_zip="$repo_root/build/aravis-package.zip"
 if [ ! -f "$aravis_zip" ]; then
 	echo "error: $aravis_zip is missing - the workflow stage that fetches it did not run" >&2
@@ -203,24 +201,47 @@ mkdir -p "$sdk"
 ( cd "$sdk" && unzip -qo "$aravis_zip" )
 echo "extracted $(find "$sdk" -type f | wc -l) files"
 
-# Aravis itself comes from the published package. Its dependency headers and
-# import libraries do not: the package ships include/aravis-0.10 only - no glib
-# headers, no glib import libraries - so it cannot be compiled against on its
-# own. That is a gap in the package, recorded here; MSYS2 supplies them for now.
+# The package's include directory is named after the API version, which is not
+# the release number: 0.9.3 ships the 0.10 API.
+api=0.10
+
+# Everything below comes from the published package and nothing else: no MSYS2
+# include or lib paths appear. That is the point - if this builds, the package is
+# a complete SDK, and an earlier version of it was not.
 gcc -O1 -Wall -Wextra -DVCAM_WITH_ARAVIS -o "$out_dir/vcam-publisher.exe" \
 	"$vcam_dir/vcam_publisher.c" "$vcam_dir/framebus.c" \
-	-I"$sdk/include/aravis-0.10" \
-	-I/mingw64/include/glib-2.0 -I/mingw64/lib/glib-2.0/include \
-	-I/mingw64/include -L"$sdk/lib" -L/mingw64/lib \
-	-laravis-0.10 -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 \
+	-I"$sdk/include/aravis-$api" \
+	-I"$sdk/include/glib-2.0" -I"$sdk/lib/glib-2.0/include" \
+	-L"$sdk/lib" \
+	-laravis-$api -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 \
 	-lxml2 -lusb-1.0 -lz -lws2_32 -liphlpapi
 echo "built $out_dir/vcam-publisher.exe"
+
+echo '--- pkg-config from the package alone ---'
+PKG_CONFIG_PATH="$sdk/lib/pkgconfig" pkg-config --modversion "aravis-$api" 2>/dev/null \
+	|| echo "warning: pkg-config cannot see aravis-$api in the package"
+PKG_CONFIG_PATH="$sdk/lib/pkgconfig" pkg-config --cflags --libs "aravis-$api" 2>/dev/null \
+	|| echo "warning: pkg-config produced no flags for aravis-$api"
 
 # Next to the executables, so the loader finds them: the package's DLLs and
 # MSYS2's glib are the same MinGW build, but only the ones in the executable's
 # own directory are guaranteed to match what it linked against.
 cp -f "$sdk"/bin/*.dll "$out_dir/" 2>/dev/null || true
 echo "copied $(ls "$out_dir"/*.dll | wc -l) DLLs next to the executables"
+
+# The kit is shipped as a flat directory, so a runtime DLL that is not in it
+# cannot be found on a client machine. Compare what the publisher needs against
+# what the package supplied: this is the check that makes the kit portable.
+echo '--- runtime dependencies of the publisher that the kit does not carry ---'
+publisher_missing=""
+if command -v ldd >/dev/null 2>&1; then
+	for dep in $(ldd "$out_dir/vcam-publisher.exe" 2>/dev/null | awk '{print $3}' \
+			| grep -i 'mingw64\|/bin/' || true); do
+		base=$(basename "$dep")
+		[ -f "$out_dir/$base" ] || publisher_missing="$publisher_missing $base"
+	done
+fi
+echo "missing:${publisher_missing:- none}"
 
 echo '--- synthetic publish in one process, verify in another ---'
 "$out_dir/vcam-publisher.exe" --synthetic --frames 3 --hold 8000 2>&1 | tee "$out_dir/publisher-synthetic.log" &
@@ -248,6 +269,26 @@ if [ -f "$fake_tool" ]; then
 	echo '--- acquiring frames from the fake camera ---'
 	"$out_dir/vcam-publisher.exe" --aravis --frames 5 2>&1 | tee "$out_dir/publisher-aravis.log" || true
 	aravis_line=$(grep '^PUBLISHER source=aravis ' "$out_dir/publisher-aravis.log" | tail -n1 || true)
+
+	# The live path: the publisher keeps the camera open and another process
+	# reads what it puts on the bus, exactly as the media source will. This is
+	# the shape a webcam session has, and it is the only place the scaling from
+	# the sensor's resolution to the camera's 640x480 is exercised end to end -
+	# the fake camera is 512x512, so the frame must come out letterboxed.
+	echo '--- live acquisition: continuous publisher, second process reads it ---'
+	"$out_dir/vcam-publisher.exe" --aravis --seconds 8 2>&1 | tee "$out_dir/publisher-live.log" &
+	live_pid=$!
+	sleep 4
+	"$out_dir/vcam-publisher.exe" --verify 2>&1 | tee "$out_dir/publisher-live-verify.log" || true
+	wait "$live_pid" || true
+	live_line=$(grep '^PUBLISHER source=aravis ' "$out_dir/publisher-live.log" | tail -n1 || true)
+	live_rate=$(grep -o '[0-9.]* fps' "$out_dir/publisher-live.log" | tail -n1 || true)
+	live_verify=$(grep '^PUBLISHER_VERIFY ' "$out_dir/publisher-live-verify.log" | tail -n1 || true)
+	live_detail=$(grep '^verify: ' "$out_dir/publisher-live-verify.log" | tail -n1 || true)
+	echo "live line: ${live_line:-none}"
+	echo "live rate: ${live_rate:-none}"
+	echo "live verify: ${live_verify:-none}"
+	echo "live detail: ${live_detail:-none}"
 	kill "$fake_pid" 2>/dev/null || true
 else
 	echo 'warning: arv-fake-gv-camera-0.10.exe not found in the package'
@@ -264,11 +305,19 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
 		echo "${publisher_line:-PUBLISHER (no output)}"
 		echo "${verify_line:-PUBLISHER_VERIFY (no output)}"
 		echo "${aravis_line:-PUBLISHER source=aravis (no output)}"
+		echo "${live_line:-PUBLISHER source=aravis --seconds (no output)}"
+		echo "${live_rate:-rate (no output)}"
+		echo "${live_verify:-PUBLISHER_VERIFY live (no output)}"
+		echo "${live_detail:-verify detail (no output)}"
 		echo '```'
 		echo ''
 		echo 'verify ok=1 means one process published through shared memory and another'
-		echo 'read the frame back with its tag and geometry intact. An aravis line with'
-		echo 'published>0 means frames came off a GigE Vision camera through Aravis.'
+		echo 'read the frame back at the geometry the media source advertises. An aravis'
+		echo 'line with published>0 means frames came off a GigE Vision camera through'
+		echo 'Aravis; the tag field is 0x5a for generated frames and a real pixel value'
+		echo 'for camera frames, which is how the live line is told apart from the'
+		echo 'synthetic one. corner=000000 on a 512x512 sensor is the letterbox bar:'
+		echo 'the frame was scaled to 640x480 rather than copied.'
 	} >> "$GITHUB_STEP_SUMMARY"
 fi
 
