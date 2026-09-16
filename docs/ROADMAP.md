@@ -99,22 +99,29 @@ The media source that makes applications see a camera, as measured:
 | What does `sourceId` name? | A **CLSID string**. Media Foundation activates it in-process even for `Lifetime_Session`/`Access_CurrentUser`, and the object must answer **`IMFActivate`**; `ActivateObject` then hands out the source, which must also answer **`IMFMediaSourceEx`** `{3C9B2EB9-86D5-4514-A394-F56664F9F0D8}` |
 | With nothing registered under that CLSID? | `Start` fails with `REGDB_E_CLASSNOTREG` - that is how "the CLSID is what `Start` needs" was established |
 | A stream without `MF_DEVICESTREAM_STREAM_CATEGORY` = `PINNAME_VIDEO_CAPTURE`? | the frame server refuses the source, before it ever calls `Start` on it |
-| MinGW headers for any of this? | no `mfvirtualcamera.h`, no `MF_DEVICESTREAM_*` keys, and `IMFMediaStreamVtbl` is missing the queue-parameter methods - all three are declared by hand |
+| MinGW headers for any of this? | no `mfvirtualcamera.h`, no `MF_DEVICESTREAM_*` keys, and no `IMFGetService`/`IKsControl` at all - all declared by hand |
+| Which interfaces does the pipeline ask a source for? | `IMFActivate`, `IMFMediaSourceEx`, `IMFMediaSource`, then by name `IMFGetService` `{FA993888-4383-415A-A930-DD472A8CF6F7}` (answer `MF_E_UNSUPPORTED_SERVICE`) and `IKsControl` `{28F54685-06FD-11D2-B27A-00A0C9223196}` (answer `ERROR_SET_NOT_FOUND`). It also asks for `IMFCollection`, which the working reference does not implement either |
+| Why did the media source crash the frame server? | **our vtable was two slots too wide.**  `QueueEventParamVar`/`QueueEventParamUnk` belong to `IMFMediaEventQueue`, not to `IMFMediaEventGenerator`; with them in the generator every `IMFMediaSource` method sat two slots late, so the pipeline's `GetSourceAttributes` (slot 10) landed in `Pause`. Returning `S_OK` there without filling the caller's out-parameters is what faulted inside `FrameServerMonitorClient.dll`, and returning anything else is why `Start` echoed `Pause`'s result. MinGW's own headers - four generator methods - were right all along |
 | Where do frames come from? | a shared-memory frame bus (double-buffered, sequence-flipped, named event), so the process that owns the camera and the media source inside the frame server never share a library, only memory |
 
-What CI proves now: registration, creation, `Start`, enumeration and a frame
-read, plus the publisher half end to end - a continuous Aravis acquisition at
-~25 fps from Aravis' own fake GigE Vision camera, read back by a second process
-at the geometry the media source advertises (a 512x512 sensor arrives letterboxed
-in 640x480 RGB32 rather than sheared).
+What CI proves now: registration, creation, the whole interface contract above
+(the pipeline walks it and stops only on policy), plus the publisher half end to
+end - a continuous Aravis acquisition at ~25 fps from Aravis' own fake GigE
+Vision camera, read back by a second process at the geometry the media source
+advertises (a 512x512 sensor arrives letterboxed in 640x480 RGB32 rather than
+sheared).
 
-What is left is a client-machine answer, not more code: on a Windows **Server**
-SKU the frame server faults inside its own `FrameServerMonitorClient.dll`, so the
-last two steps - the camera appearing in the Windows Camera app, and a frame
-arriving through the frame server - can only be confirmed on a Windows 11 client.
-The kit for that is on the `artifacts` branch at `vcam/0.1.0/win-x64/`:
-`run-live.cmd` registers the media source and starts the publisher, `run-stop.cmd`
-undoes it.
+What is left is one elevated run on a Windows 11 client, and it is an access
+question rather than a code question. The frame server CoCreates the media
+source *inside its own service process*, which cannot read HKCU, so the class
+must be registered machine-wide; without that `IMFVirtualCamera::Start` returns
+`ERROR_PATH_NOT_FOUND` (0x80070003), the signature measured here. On a Windows
+**Server** runner the same call returns `E_ACCESSDENIED` because the runner's
+camera privacy policy denies access to unpublished apps. Both are named by the
+reader now, so its output says which one is in the way. The kit is on the
+`artifacts` branch at `vcam/0.1.0/win-x64/`: `run-verify.cmd` registers,
+creates, enumerates and reads a frame in one elevated click, `run-live.cmd`
+does the same for a live publisher, `run-stop.cmd` undoes it.
 
 ## Milestones
 
@@ -132,7 +139,7 @@ undoes it.
 | M9 | Emitter: IR → OpenCV C++ and Python, step-synced code window | emitted C++ compiles and reproduces corpus results |
 | M10 | Real `.hdev` text open/save + unsupported-operator report ranked by frequency | importing a real program lists the next operators to implement, in order |
 | M11 | Media Foundation webcam backend. Step 0 is a CI probe: prove MinGW's MF headers and import libraries actually build and link something that enumerates devices | enumeration and pixel-format conversion covered in CI; frame capture verified on a machine with a webcam, since runners have none |
-| M12 | Aravis to webcam: user-mode virtual camera. API reached by dynamic resolution (headers predate it), media source implemented and published | half of it is CI-proven: Aravis to frame bus to a second process, live and continuously, at 640x480 RGB32. The other half - a separate process (browser, VLC, Camera app) enumerating and showing the camera - needs a Windows 11 client; the runner is a Server SKU whose frame server faults in `FrameServerMonitorClient.dll`. Kit: `artifacts:vcam/0.1.0/win-x64/` |
+| M12 | Aravis to webcam: user-mode virtual camera. API reached by dynamic resolution (headers predate it), media source implemented and published | CI-proven: Aravis to frame bus to a second process, live and continuously, at 640x480 RGB32; and the frame server walking the whole media-source contract without a fault. Outstanding: one elevated run on a Windows 11 client to see the camera appear - blocked on machine-wide registration, not on code. Kit: `artifacts:vcam/0.1.0/win-x64/` |
 
 ## Aravis integration
 

@@ -356,7 +356,7 @@ echo "register line: ${register_line:-none}"
 echo '=== virtual camera end to end (publish, enumerate, read a frame) ==='
 gcc -O1 -Wall -Wextra -o "$out_dir/vcam-read.exe" \
 	"$vcam_dir/vcam_read_probe.c" "$vcam_dir/framebus.c" \
-	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid
+	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid -ladvapi32
 rm -f "$out_dir/vcamsource.dll.log"
 "$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read.log" || true
 read_line=$(grep '^VCAM_READ ' "$out_dir/vcam-read.log" | tail -n1 || true)

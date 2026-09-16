@@ -205,6 +205,22 @@ static LONG WINAPI crash_handler(EXCEPTION_POINTERS *info)
 	return EXCEPTION_EXECUTE_HANDLER;
 }
 
+/* Where the class is registered is not a detail, it is the difference between
+ * the frame server finding the media source and not: its service process cannot
+ * read HKCU, so it needs the HKLM entry. Reporting both before trying tells the
+ * reader of this output which of the two is missing without a second run. */
+static int class_registered(HKEY root)
+{
+	static const wchar_t *subkey =
+		L"Software\\Classes\\CLSID\\" VCAM_SOURCE_CLSID_STRING L"\\InprocServer32";
+	HKEY key = NULL;
+	LONG status = RegOpenKeyExW(root, subkey, 0, KEY_READ, &key);
+	if (status != ERROR_SUCCESS)
+		return 0;
+	RegCloseKey(key);
+	return 1;
+}
+
 int main(void)
 {
 	IMFAttributes *attributes = NULL;
@@ -246,6 +262,16 @@ int main(void)
 
 	framebus_selfcheck();
 
+	{
+		const int hkcu_registered = class_registered(HKEY_CURRENT_USER);
+		const int hklm_registered = class_registered(HKEY_LOCAL_MACHINE);
+		printf("media source registered: HKCU=%s HKLM=%s\n",
+		       hkcu_registered ? "yes" : "no", hklm_registered ? "yes" : "no");
+		if (!hklm_registered)
+			printf("note: without the HKLM entry the frame server's own process\n"
+			       "      cannot instantiate the media source; run this elevated.\n");
+	}
+
 	/* Publish the camera first, exactly as the publishing application will. */
 	create_vcam = vcam_resolve_create();
 	if (!create_vcam) {
@@ -271,6 +297,17 @@ int main(void)
 	if (FAILED(started)) {
 		printf("camera did not start; is the media source registered under %ls?\n",
 		       VCAM_SOURCE_CLSID_STRING);
+		/* The two failures this kit has actually produced, named, because they
+		 * look nothing like each other and neither is obvious from the number. */
+		if ((unsigned long)started == 0x80070003ul)
+			printf("ERROR_PATH_NOT_FOUND: the frame server could not reach the media\n"
+			       "      source. That is what an unregistered (or per-user only)\n"
+			       "      class looks like from the service, and what an unavailable\n"
+			       "      Windows Camera Frame Server service looks like. Both need an\n"
+			       "      elevated prompt.\n");
+		if ((unsigned long)started == 0x80070005ul)
+			printf("E_ACCESSDENIED: camera access is denied by policy for this user or\n"
+			       "      for unpackaged apps - Settings > Privacy & security > Camera.\n");
 		IMFVirtualCamera_Shutdown(virtual_camera);
 		IMFVirtualCamera_Release(virtual_camera);
 		MFShutdown();
