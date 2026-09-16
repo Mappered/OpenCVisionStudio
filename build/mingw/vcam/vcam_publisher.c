@@ -226,7 +226,8 @@ static int publish_aravis(const char *device_id, unsigned frames)
 
 	arv_camera_set_acquisition_mode(camera, ARV_ACQUISITION_MODE_CONTINUOUS, &error);
 	arv_camera_set_pixel_format(camera, ARV_PIXEL_FORMAT_MONO_8, &error);
-	stream = arv_camera_create_stream(camera, NULL, NULL, &error);
+	/* Five parameters: callback, user data, destroy notify, then GError. */
+	stream = arv_camera_create_stream(camera, NULL, NULL, NULL, &error);
 	if (!stream) {
 		printf("aravis: cannot create stream: %s\n", error ? error->message : "unknown error");
 		if (error)
