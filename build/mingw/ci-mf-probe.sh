@@ -189,7 +189,9 @@ echo "built $out_dir/vcamsource.dll"
 # acquisition with no hardware.
 # ---------------------------------------------------------------------------
 echo '=== publisher: Aravis package from the artifacts branch ==='
-pacman -S --noconfirm --needed --disable-download-timeout unzip >/dev/null 2>&1 || true
+pacman -S --noconfirm --needed --disable-download-timeout \
+	unzip mingw-w64-x86_64-glib2 mingw-w64-x86_64-libxml2 mingw-w64-x86_64-libusb \
+	>/dev/null 2>&1 || true
 aravis_zip="$repo_root/build/aravis-package.zip"
 if [ ! -f "$aravis_zip" ]; then
 	echo "error: $aravis_zip is missing - the workflow stage that fetches it did not run" >&2
@@ -201,11 +203,15 @@ mkdir -p "$sdk"
 ( cd "$sdk" && unzip -qo "$aravis_zip" )
 echo "extracted $(find "$sdk" -type f | wc -l) files"
 
+# Aravis itself comes from the published package. Its dependency headers and
+# import libraries do not: the package ships include/aravis-0.10 only - no glib
+# headers, no glib import libraries - so it cannot be compiled against on its
+# own. That is a gap in the package, recorded here; MSYS2 supplies them for now.
 gcc -O1 -Wall -Wextra -DVCAM_WITH_ARAVIS -o "$out_dir/vcam-publisher.exe" \
 	"$vcam_dir/vcam_publisher.c" "$vcam_dir/framebus.c" \
-	-I"$sdk/include/aravis-0.10" -I"$sdk/include/glib-2.0" -I"$sdk/include" \
-	-I"$sdk/include/libxml2" -I"$sdk/include/libusb-1.0" \
-	-I"$sdk/lib/glib-2.0/include" -L"$sdk/lib" \
+	-I"$sdk/include/aravis-0.10" \
+	-I/mingw64/include/glib-2.0 -I/mingw64/lib/glib-2.0/include \
+	-I/mingw64/include -L"$sdk/lib" -L/mingw64/lib \
 	-laravis-0.10 -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 \
 	-lxml2 -lusb-1.0 -lz -lws2_32 -liphlpapi
 echo "built $out_dir/vcam-publisher.exe"
