@@ -408,6 +408,19 @@ MSYS2_ARG_CONV_EXCL='*' logman create trace vcametw -ets \
 rm -f "$out_dir/vcamsource.dll.log"
 "$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read.log" || true
 
+# The frame server has not adopted the source on these machines yet, so the
+# source's own half of the pipeline is proven separately: drive it by CLSID,
+# the way the frame server would, and check the pixels that come back.
+echo '=== the media source, driven directly ==='
+gcc -O1 -Wall -Wextra -o "$out_dir/vcam-sourcedrive.exe" \
+	"$vcam_dir/vcam_source_drive.c" "$vcam_dir/framebus.c" \
+	-lmf -lmfplat -lmfreadwrite -lmfuuid -lole32 -loleaut32 -luuid
+"$out_dir/vcam-sourcedrive.exe" 2>&1 | tee "$out_dir/vcam-sourcedrive.log" || true
+sourcedrive_line=$(grep '^SOURCE_DRIVE final ' "$out_dir/vcam-sourcedrive.log" | tail -n1 || true)
+sourcedrive_detail=$(grep '^sample bytes=' "$out_dir/vcam-sourcedrive.log" | tail -n1 || true)
+echo "source drive line: ${sourcedrive_line:-none}"
+echo "source drive sample: ${sourcedrive_detail:-none}"
+
 MSYS2_ARG_CONV_EXCL='*' logman stop vcametw -ets >/dev/null 2>&1 || true
 if MSYS2_ARG_CONV_EXCL='*' tracerpt "$out_dir\\frameserver.etl" -o "$out_dir\\frameserver.csv" -of CSV -y >/dev/null 2>&1; then
 	echo '--- frame server ETW events mentioning a failure or our CLSID ---'
@@ -451,15 +464,23 @@ if [ -f "$sdk/bin/arv-fake-gv-camera-0.10.exe" ] && [ -f "$out_dir/vcam-publishe
 	# Fresh trace, so what follows is only this run.
 	rm -f "$out_dir/vcamsource.dll.log"
 	"$out_dir/vcam-read.exe" 2>&1 | tee "$out_dir/vcam-read-live.log" || true
+	# And the media source driven directly, reading the live camera's frames
+	# rather than publishing frames of its own.
+	"$out_dir/vcam-sourcedrive.exe" --no-publish 2>&1 \
+		| tee "$out_dir/vcam-sourcedrive-live.log" || true
 	wait "$publisher_for_reader" || true
 	kill "$fake_pid2" 2>/dev/null || true
 
 	live_read_line=$(grep '^VCAM_READ ' "$out_dir/vcam-read-live.log" | tail -n1 || true)
 	bus_line=$(grep 'frame bus' "$out_dir/vcamsource.dll.log" 2>/dev/null | tail -n1 || true)
 	live_publisher_line=$(grep '^PUBLISHER source=aravis ' "$out_dir/publisher-for-reader.log" | tail -n1 || true)
+	live_source_line=$(grep '^SOURCE_DRIVE final ' "$out_dir/vcam-sourcedrive-live.log" | tail -n1 || true)
+	live_source_sample=$(grep '^sample bytes=' "$out_dir/vcam-sourcedrive-live.log" | tail -n1 || true)
 	echo "live read line: ${live_read_line:-none}"
 	echo "media source bus line: ${bus_line:-none}"
 	echo "publisher line: ${live_publisher_line:-none}"
+	echo "live source drive line: ${live_source_line:-none}"
+	echo "live source drive sample: ${live_source_sample:-none}"
 	# Which processes loaded the media source, and how far each got, is the whole
 	# question at this point, so the trace is printed in full.
 	echo '--- media source trace (live) ---'
@@ -483,6 +504,8 @@ if [ -f "$sdk/bin/arv-fake-gv-camera-0.10.exe" ] && [ -f "$out_dir/vcam-publishe
 			echo "${live_publisher_line:-publisher (no output)}"
 			echo "${live_read_line:-VCAM_READ (no output)}"
 			echo "${bus_line:-media source trace (no output)}"
+			echo "${live_source_line:-SOURCE_DRIVE (no output)}"
+			echo "${live_source_sample:-sample detail (no output)}"
 			echo '```'
 			echo ''
 			echo 'The publisher line says frames came off a GigE Vision camera. The trace'
