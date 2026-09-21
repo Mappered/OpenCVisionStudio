@@ -1,0 +1,207 @@
+# Build the OpenCV WASM package (opencv.js + opencv_js.wasm) from the vendored
+# subtree and publish it to the `artifacts` branch, so the browser/renderer side
+# of the IDE has a vision backend without shipping a native binary.
+#
+# Runs on ubuntu: the host OS does not matter when the target is wasm32, and
+# emscripten is much better supported there than under MSYS2. This workflow is
+# normally invoked by build-opencv.yml (the Windows native build) rather than
+# by hand, but it can be dispatched directly too.
+#
+# NO EXTERNAL ACTIONS: emsdk is a git clone plus a shell script, checkout and
+# publishing are git, all plain commands.
+#
+# Output: `artifacts` branch, opencv/<version>/wasm32/
+
+name: Build OpenCV WASM
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch or tag carrying the opencv/ subtree
+        type: string
+        default: external/OpenCV
+      modules:
+        description: Comma separated module list for BUILD_LIST
+        type: string
+        default: core,imgproc
+      simd:
+        description: Build with WASM SIMD
+        type: boolean
+        default: false
+      emsdk_version:
+        description: emsdk version to install (pin this once a working one is known)
+        type: string
+        default: latest
+      publish:
+        description: Publish the built package to the artifacts branch
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Branch or tag carrying the opencv/ subtree
+        type: string
+        required: false
+        default: external/OpenCV
+      modules:
+        description: Comma separated module list for BUILD_LIST
+        type: string
+        required: false
+        default: core,imgproc
+      simd:
+        description: Build with WASM SIMD
+        type: boolean
+        required: false
+        default: false
+      emsdk_version:
+        description: emsdk version to install
+        type: string
+        required: false
+        default: latest
+      publish:
+        description: Publish the built package to the artifacts branch
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Fetch opencv source and build recipe
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init --quiet .
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+          git fetch --quiet --depth 1 origin "${{ inputs.source_ref }}"
+          git checkout --force --quiet FETCH_HEAD
+          source_commit=$(git rev-parse HEAD)
+          subtree_tree=$(git rev-parse 'HEAD:opencv')
+
+          # The build recipe lives on the same ref as this workflow file.
+          git fetch --quiet --depth 1 origin "${{ github.ref_name }}"
+          recipe_commit=$(git rev-parse FETCH_HEAD)
+          mkdir -p build/wasm
+          git show "${recipe_commit}:build/wasm/ci-opencv-wasm.sh" > build/wasm/ci-opencv-wasm.sh
+          [ -s build/wasm/ci-opencv-wasm.sh ] || { echo 'recipe not found on the recipe ref'; exit 1; }
+
+          {
+            echo "BUILD_SOURCE_COMMIT=$source_commit"
+            echo "BUILD_SOURCE_REF=${{ inputs.source_ref }}"
+            echo "BUILD_SUBTREE_TREE=$subtree_tree"
+          } >> "$GITHUB_ENV"
+          echo "opencv $source_commit (${{ inputs.source_ref }}) subtree $subtree_tree, recipe $recipe_commit"
+
+      - name: Ensure packaging tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v zip >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq zip; }
+          command -v zip >/dev/null 2>&1 || { echo 'zip unavailable'; exit 1; }
+
+      - name: Build, validate and package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash build/wasm/ci-opencv-wasm.sh \
+            "$PWD/opencv" "$PWD" "$PWD/staging" "$PWD/dist" \
+            '${{ inputs.modules }}' '${{ inputs.simd }}' '${{ inputs.emsdk_version }}'
+          ls -l dist
+
+      - name: Publish to the artifacts branch
+        if: ${{ inputs.publish == true }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(python3 -c "import json;print(json.load(open('dist/BUILDINFO.json'))['version'])")
+          platform=$(python3 -c "import json;print(json.load(open('dist/BUILDINFO.json'))['platform'])")
+          dest="opencv/$version/$platform"
+
+          checkout="$RUNNER_TEMP/artifacts-repo"
+          rm -rf "$checkout"
+          git clone --quiet --branch artifacts \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "$checkout"
+          mkdir -p "$checkout/$dest"
+          cp dist/*.zip dist/SHA256SUMS dist/BUILDINFO.json "$checkout/$dest/"
+
+          # Regenerate the shared index from every package on the branch, so one
+          # package's build never drops another's entry.
+          python3 - "$checkout" <<'PY'
+          import json, pathlib, sys
+
+          root = pathlib.Path(sys.argv[1])
+          packages = []
+          for info in sorted(root.glob('*/*/*/BUILDINFO.json')):
+              data = json.loads(info.read_text(encoding='utf-8-sig'))
+              data['path'] = str(info.parent.relative_to(root)).replace('\\', '/')
+              packages.append(data)
+          packages.sort(key=lambda p: (p.get('package', ''), p.get('version', ''), p.get('platform', '')))
+
+          (root / 'manifest.json').write_text(
+              json.dumps({'packages': packages}, indent=2) + '\n', encoding='utf-8')
+
+          lines = [
+              '# Build artifacts',
+              '',
+              'Prebuilt dependencies produced by CI. Consumers download these so they',
+              'need neither cmake nor a toolchain of their own.',
+              '',
+              '| Package | Version | Platform | Modules | Toolchain | Built (UTC) |',
+              '|---|---|---|---|---|---|',
+          ]
+          for p in packages:
+              lines.append('| {pkg} | {ver} | {plat} | {mods} | {tool} | {ts} |'.format(
+                  pkg=p.get('package', ''), ver=p.get('version', ''), plat=p.get('platform', ''),
+                  mods=p.get('modules') or '-', tool=p.get('toolchain', ''), ts=p.get('built_utc', '')))
+          lines += [
+              '',
+              '## How to consume',
+              '',
+              '```sh',
+              'git fetch origin artifacts',
+              'git show origin/artifacts:manifest.json',
+              'git archive --remote=origin artifacts opencv/4.14.0/win-x64 | tar -x',
+              'git archive --remote=origin artifacts opencv/4.14.0/wasm32 | tar -x',
+              '```',
+              '',
+              'Pin the commit of this branch, not the branch name, for a reproducible',
+              'build. Each BUILDINFO.json records the toolchain, the subtree tree hash',
+              'and the exact module list the package was built from.',
+              '',
+          ]
+          (root / 'README.md').write_text('\n'.join(lines), encoding='utf-8')
+          PY
+
+          cd "$checkout"
+          git config user.name  "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "artifacts branch already up to date"
+          else
+            git commit --quiet -m "opencv $version wasm32"
+            git push --quiet origin HEAD:artifacts
+            echo "published opencv $version (wasm32) to $dest"
+          fi
+
+      - name: Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          info = json.load(open('dist/BUILDINFO.json'))
+          print("OpenCV {} (wasm32), modules: {}".format(info['version'], info['modules']))
+          print()
+          print("Toolchain: {}".format(info['toolchain']))
+          print("Subtree tree: {}".format(info['subtree_tree']))
+          print("Source commit: {} ({})".format(info['source_commit'], info['source_ref']))
+          print("SIMD: {}".format(info.get('simd')))
+          PY
