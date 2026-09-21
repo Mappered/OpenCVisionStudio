@@ -81,16 +81,23 @@ devel_pkgs="glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 libxml-2.0 libusb-1.0 zlib"
 read -r -a dep_cflags <<<"$(pkg-config --cflags $devel_pkgs)"
 read -r -a dep_libs   <<<"$(pkg-config --libs   $devel_pkgs)"
 
-# Mirrors meson's GCC branch of cc_export_define for a shared build, plus
-# -fvisibility=hidden so only the public API is exported.
-arv_api='extern __attribute__ ((visibility ("default")))'
+# Export strategy, and why it is not meson's: meson's GCC branch uses
+# -fvisibility=hidden plus a visibility("default") attribute on ARV_API. On PE
+# that attribute is not honoured, so the DLL ends up exporting nothing and the
+# import library comes out empty - arv-tool then fails to link every symbol.
+# MinGW auto-export is the reliable equivalent: plain declarations for
+# consumers, every symbol in the object files exported by the linker.
+arv_api='extern'
 
 cflags=(
+	# Pinned deliberately: recent GCC defaults to C23, where implicit function
+	# declarations and other 1990s idioms in this vintage of the codebase become
+	# errors. gnu17 is what upstream's own builds assume.
+	-std=gnu17
 	-O2
 	-DNDEBUG
 	-DARAVIS_COMPILATION
 	-D_WIN32_WINNT=0x0601
-	-fvisibility=hidden
 	-I"$gen_dir"
 	-I"$src_src"
 	"${dep_cflags[@]}"
@@ -140,7 +147,10 @@ mapfile -t private_headers < <(cd "$src_src" && ls *private.h | grep -v 'v4l2' |
 [ "${#public_headers[@]}" -gt 10 ]  || { echo "error: unexpected public header count" >&2; exit 1; }
 [ "${#private_headers[@]}" -gt 5 ]  || { echo "error: unexpected private header count" >&2; exit 1; }
 
-enum_header_fhead() { printf '#ifndef %s\n#define %s\n\n#include <arvapi.h>\n\nG_BEGIN_DECLS\n' "$1" "$1"; }
+# glib-object.h is not optional here: the generated declarations use GType, and
+# sources such as arvdebug.c include this header before anything that would pull
+# it in. meson's mkenums_simple emits the same two includes.
+enum_header_fhead() { printf '#ifndef %s\n#define %s\n\n#include <glib-object.h>\n#include <arvapi.h>\n\nG_BEGIN_DECLS\n' "$1" "$1"; }
 enum_header_ftail()  { printf '\nG_END_DECLS\n\n#endif\n'; }
 
 generate_enum_types() {
@@ -159,7 +169,7 @@ generate_enum_types() {
 
 	glib-mkenums \
 		--fhead "#include <arvapi.h>\n#include \"$source_include\"\n\n#define C_ENUM(v) ((gint) v)\n#define C_FLAGS(v) ((guint) v)\n" \
-		--fprod "\n/* enumerations from \"@filename@\" */\n" \
+		--fprod "\n/* enumerations from \"@filename@\" */\n#include \"@filename@\"\n" \
 		--vhead "static const G@Type@Value _@enum_name@_values[] = {\n" \
 		--vprod "  { C_@TYPE@ (@VALUENAME@), \"@VALUENAME@\", \"@valuenick@\" },\n" \
 		--vtail "  { 0, NULL, NULL }\n};\n\nGType\n@enum_name@_get_type (void)\n{\n  static gsize type_id = 0;\n\n  if (g_once_init_enter (&type_id)) {\n    GType id = g_@type@_register_static (\"@EnumName@\", _@enum_name@_values);\n    g_once_init_leave (&type_id, id);\n  }\n\n  return type_id;\n}\n\n" \
@@ -188,12 +198,23 @@ grep -q 'ARV_TYPE_GVCP_PACKET_TYPE' "$gen_dir/arvenumtypes.h" "$gen_dir/arvenumt
 # ---------------------------------------------------------------------------
 # GResources (gnome.compile_resources equivalent)
 # ---------------------------------------------------------------------------
+# glib-compile-resources writes one output per invocation and selects it with
+# --target; there is no --header option, so this is two passes.
 ( cd "$src_src" && glib-compile-resources \
 	--sourcedir=. \
 	--c-name arvresources \
-	--generate-header --header="$gen_dir/arvresources.h" \
-	--generate-source --target="$gen_dir/arvresources.c" \
+	--generate-header \
+	--target="$gen_dir/arvresources.h" \
 	arvresources.xml )
+( cd "$src_src" && glib-compile-resources \
+	--sourcedir=. \
+	--c-name arvresources \
+	--generate-source \
+	--target="$gen_dir/arvresources.c" \
+	arvresources.xml )
+for generated in arvresources.h arvresources.c; do
+	[ -s "$gen_dir/$generated" ] || { echo "error: failed to generate $generated" >&2; exit 1; }
+done
 
 # ---------------------------------------------------------------------------
 # Library sources
@@ -235,6 +256,7 @@ dll="$prefix/bin/libaravis-$api-0.dll"
 implib="$prefix/lib/libaravis-$api.dll.a"
 
 gcc -shared -o "$dll" "${objects[@]}" \
+	-Wl,--export-all-symbols \
 	-Wl,--out-implib,"$implib" \
 	"${dep_libs[@]}" "${system_libs[@]}"
 
@@ -266,7 +288,7 @@ done
 cp -f "$gen_dir/arvapi.h" "$gen_dir/arvfeatures.h" "$gen_dir/arvversion.h" "$include_dir/"
 
 cat > "$prefix/lib/pkgconfig/aravis-$api.pc" <<EOF
-prefix=$prefix
+prefix=\${pcfiledir}/../..
 exec_prefix=\${prefix}
 libdir=\${exec_prefix}/lib
 includedir=\${prefix}/include
@@ -274,11 +296,69 @@ includedir=\${prefix}/include
 Name: Aravis
 Description: Camera control and image acquisition library
 Version: $version
-Requires: glib-2.0 gobject-2.0 gio-2.0
-Requires.private: libxml-2.0
-Libs: -L\${libdir} -laravis-$api
-Cflags: -I\${includedir}/aravis-$api
+Libs: -L\${libdir} -laravis-$api -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 -lxml2 -lusb-1.0 -lz
+Cflags: -I\${includedir}/aravis-$api -I\${includedir}/glib-2.0 -I\${includedir}/libxml2 -I\${includedir}/libusb-1.0 -I\${libdir}/glib-2.0/include
 EOF
+
+# ---------------------------------------------------------------------------
+# Dependency headers and import libraries.
+#
+# <arv.h> includes <glib-object.h>, so a package holding only aravis headers
+# cannot be compiled against - it can run but not build. This is the difference
+# between shipping binaries and shipping an SDK, and a consumer hitting it is
+# what prompted the change. The .pc above deliberately spells out the flags
+# instead of using Requires, so it works without the dependencies' own .pc
+# files, whose prefixes point at the machine that built them.
+# ---------------------------------------------------------------------------
+echo '=== dependency headers and import libraries ==='
+for h in glib-2.0 libxml2 libusb-1.0; do
+	src_h="/mingw64/include/$h"
+	[ -d "$src_h" ] || { echo "error: missing dependency headers: $src_h" >&2; exit 1; }
+	cp -r "$src_h" "$prefix/include/"
+done
+for h in zlib.h zconf.h; do
+	[ -f "/mingw64/include/$h" ] || { echo "error: missing header: /mingw64/include/$h" >&2; exit 1; }
+	cp -f "/mingw64/include/$h" "$prefix/include/"
+done
+mkdir -p "$prefix/lib/glib-2.0/include"
+[ -f /mingw64/lib/glib-2.0/include/glibconfig.h ] \
+	|| { echo 'error: glibconfig.h missing' >&2; exit 1; }
+cp -f /mingw64/lib/glib-2.0/include/glibconfig.h "$prefix/lib/glib-2.0/include/"
+for lib in glib-2.0 gobject-2.0 gio-2.0 gmodule-2.0 xml2 usb-1.0 z; do
+	[ -f "/mingw64/lib/lib$lib.dll.a" ] || { echo "error: missing import library: lib$lib.dll.a" >&2; exit 1; }
+	cp -f "/mingw64/lib/lib$lib.dll.a" "$prefix/lib/"
+done
+echo "dependency headers and $(ls "$prefix/lib"/*.dll.a | wc -l) import libraries staged"
+
+cat > "$prefix/README.txt" <<EOF
+Aravis $version ($api) for MinGW-w64
+====================================
+
+Layout
+  include/aravis-$api/   Aravis headers (include <arv.h>)
+  include/glib-2.0/      GLib headers, which <arv.h> needs
+  include/libxml2/       libxml2 headers
+  include/libusb-1.0/    libusb headers
+  lib/                   import libraries: -laravis-$api plus its dependencies
+  lib/glib-2.0/include/  glibconfig.h
+  lib/pkgconfig/         aravis-$api.pc (relocatable; spells out all flags)
+  bin/                   runtime DLLs, including libaravis-$api-0.dll and the tools
+  licenses/              licence texts for everything redistributed
+
+Compiling against it
+  gcc myapp.c -o myapp.exe \$(pkg-config --cflags --libs aravis-$api)
+or, without pkg-config:
+  gcc myapp.c -o myapp.exe \\
+    -I<package>/include/aravis-$api -I<package>/include/glib-2.0 \\
+    -I<package>/lib/glib-2.0/include \\
+    -L<package>/lib -laravis-$api -lglib-2.0 -lgobject-2.0 -lgio-2.0 -lgmodule-2.0 -lxml2 -lusb-1.0 -lz
+
+Running
+  Put <package>/bin on PATH, or copy its DLLs next to your executable: MinGW
+  searches the executable's own directory first, and the DLLs here are the ones
+  the import libraries were built against.
+EOF
+echo "wrote package README.txt"
 
 # ---------------------------------------------------------------------------
 # Runtime dependencies: rather than guessing glib's transitive DLL set, ask the
@@ -300,6 +380,23 @@ fi
 # ---------------------------------------------------------------------------
 # BUILDINFO.json
 # ---------------------------------------------------------------------------
+# We redistribute glib, libxml2, libusb and zlib DLLs, so their licence texts
+# ship with them. MSYS2 keeps them in /mingw64/share/licenses/<package>/.
+echo '=== licenses ==='
+licenses_dir="$prefix/licenses"
+mkdir -p "$licenses_dir"
+cp -f "$src_dir/COPYING" "$licenses_dir/aravis.txt" 2>/dev/null || echo 'warning: aravis COPYING not found' >&2
+for pkg in glib2 libxml2 libusb zlib libpcre2 libffi libiconv gettext-runtime winpthreads gcc-libs; do
+	found=0
+	for f in /mingw64/share/licenses/"$pkg"/*; do
+		[ -f "$f" ] || continue
+		cp -f "$f" "$licenses_dir/$pkg-$(basename "$f")"
+		found=1
+	done
+	[ "$found" -eq 1 ] || echo "warning: no licence text found for $pkg" >&2
+done
+ls "$licenses_dir" | head -n 20
+
 dep_versions() {
 	local out=""
 	for p in glib-2.0 libxml-2.0 libusb-1.0 zlib; do
@@ -320,6 +417,7 @@ cat > "$prefix/BUILDINFO.json" <<EOF
   "built_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source_commit": "${BUILD_SOURCE_COMMIT:-${GITHUB_SHA:-unknown}}",
   "source_ref": "${BUILD_SOURCE_REF:-${GITHUB_REF_NAME:-unknown}}",
+  "subtree_tree": "${BUILD_SUBTREE_TREE:-unknown}",
   "run_url": "${GITHUB_SERVER_URL:-}${GITHUB_REPOSITORY:+/$GITHUB_REPOSITORY}${GITHUB_RUN_ID:+/actions/runs/$GITHUB_RUN_ID}",
   "dependencies": { $(dep_versions) }
 }

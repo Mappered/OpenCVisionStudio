@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenCVisionStudio (OpenCVS) — Dark</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- ======================= MENU BAR ======================= -->
+<header id="menubar">
+  <div class="menubar-inner">
+    <span class="mb-logo">H</span>
+    <nav class="menus">
+      <div class="menu" data-menu="file">
+        <button class="menu-title">File</button>
+        <ul class="dropdown">
+          <li data-cmd="new">New Program<span class="sc">Ctrl+N</span></li>
+          <li data-cmd="open">Open Program&hellip;<span class="sc">Ctrl+O</span></li>
+          <li data-cmd="save">Save Program<span class="sc">Ctrl+S</span></li>
+          <li data-cmd="saveas">Save Program As&hellip;<span class="sc">Ctrl+Shift+S</span></li>
+          <li class="sep"></li>
+          <li data-cmd="quit">Exit<span class="sc">Alt+F4</span></li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="edit">
+        <button class="menu-title">Edit</button>
+        <ul class="dropdown">
+          <li class="disabled">Undo<span class="sc">Ctrl+Z</span></li>
+          <li class="disabled">Redo<span class="sc">Ctrl+Y</span></li>
+          <li class="sep"></li>
+          <li class="disabled">Cut<span class="sc">Ctrl+X</span></li>
+          <li class="disabled">Copy<span class="sc">Ctrl+C</span></li>
+          <li class="disabled">Paste<span class="sc">Ctrl+V</span></li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="execute">
+        <button class="menu-title">Execute</button>
+        <ul class="dropdown">
+          <li data-cmd="run">Run<span class="sc">F5</span></li>
+          <li data-cmd="runtocursor">Run to Cursor<span class="sc">Ctrl+F5</span></li>
+          <li data-cmd="step">Step<span class="sc">F6</span></li>
+          <li data-cmd="stepover">Step Over<span class="sc">F8</span></li>
+          <li class="sep"></li>
+          <li data-cmd="stop">Stop</li>
+          <li data-cmd="reset">Reset Program<span class="sc">F2</span></li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="visualization">
+        <button class="menu-title">Visualization</button>
+        <ul class="dropdown">
+          <li class="check checked locked">Dark Mode</li>
+          <li class="sep"></li>
+          <li class="disabled">Iconic Variables: Medium</li>
+          <li class="disabled">Graphics Window: Fit</li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="window">
+        <button class="menu-title">Window</button>
+        <ul class="dropdown" id="menu-window-list">
+          <li class="check checked" data-win="program">Program Window</li>
+          <li class="check checked" data-win="operator">Operator Window</li>
+          <li class="check checked" data-win="graphics">Graphics Window</li>
+          <li class="check checked" data-win="variable">Variable Window</li>
+          <li class="check checked" data-win="history">History</li>
+          <li class="sep"></li>
+          <li data-cmd="cascade">Cascade Windows</li>
+          <li data-cmd="tileh">Tile Horizontally</li>
+          <li data-cmd="tilev">Tile Vertically</li>
+          <li data-cmd="dockall">Dock All Windows</li>
+          <li class="sep"></li>
+          <li data-cmd="resetlayout">Reset Layout</li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="operators">
+        <button class="menu-title">Operators</button>
+        <ul class="dropdown">
+          <li data-cmd="opdialog">Open Operator&hellip;<span class="sc">F1</span></li>
+          <li class="sep"></li>
+          <li class="disabled">Operator Reference</li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="suggestions">
+        <button class="menu-title">Suggestions</button>
+        <ul class="dropdown">
+          <li class="disabled">No suggestions available</li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="preferences">
+        <button class="menu-title">Preferences</button>
+        <ul class="dropdown">
+          <li class="check checked locked">Dark Mode</li>
+          <li class="disabled">Font Size: Default</li>
+        </ul>
+      </div>
+      <div class="menu" data-menu="help">
+        <button class="menu-title">Help</button>
+        <ul class="dropdown">
+          <li data-cmd="about">About OpenCVS</li>
+        </ul>
+      </div>
+    </nav>
+    <span class="mb-caption">OpenCVisionStudio &mdash; program.odev</span>
+  </div>
+</header>
+
+<!-- ======================= TOOL BAR ======================= -->
+<div id="toolbar">
+  <button class="tb-btn" data-cmd="new"  title="New program"><svg viewBox="0 0 16 16"><path d="M3 1h7l3 3v11H3z" fill="none" stroke="currentColor"/><path d="M10 1v3h3" fill="none" stroke="currentColor"/></svg></button>
+  <button class="tb-btn" data-cmd="open" title="Open program"><svg viewBox="0 0 16 16"><path d="M1 4h5l1 2h8v7H1z" fill="none" stroke="currentColor"/></svg></button>
+  <button class="tb-btn" data-cmd="save" title="Save program"><svg viewBox="0 0 16 16"><path d="M2 1h10l2 2v12H2z" fill="none" stroke="currentColor"/><path d="M4 1v4h7V1M4 16v-6h8v6" fill="none" stroke="currentColor"/></svg></button>
+  <span class="tb-sep"></span>
+  <button class="tb-btn accent" data-cmd="run" title="Run (F5)"><svg viewBox="0 0 16 16"><path d="M4 2l9 6-9 6z" fill="currentColor"/></svg></button>
+  <button class="tb-btn" data-cmd="runtocursor" title="Run to cursor (Ctrl+F5)"><svg viewBox="0 0 16 16"><path d="M2 2v12M2 8h7" stroke="currentColor" fill="none"/><path d="M8 3l7 5-7 5z" fill="currentColor"/></svg></button>
+  <button class="tb-btn" data-cmd="step" title="Step (F6)"><svg viewBox="0 0 16 16"><path d="M3 1v9M3 10h8" stroke="currentColor" fill="none"/><path d="M8 7l5 5-5 5z" transform="translate(0 -3) scale(.9)" fill="currentColor"/></svg></button>
+  <button class="tb-btn" data-cmd="stepover" title="Step over (F8)"><svg viewBox="0 0 16 16"><path d="M2 2l6 6-6 6" stroke="currentColor" fill="none"/><path d="M9 2l6 6-6 6" stroke="currentColor" fill="none" opacity=".45"/></svg></button>
+  <button class="tb-btn" data-cmd="stop" title="Stop"><svg viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" fill="currentColor"/></svg></button>
+  <button class="tb-btn" data-cmd="reset" title="Reset program (F2)"><svg viewBox="0 0 16 16"><path d="M8 2a6 6 0 1 1-5.6 3.8" fill="none" stroke="currentColor"/><path d="M2 1v5h5" fill="none" stroke="currentColor"/></svg></button>
+</div>
+
+<!-- ======================= WORKSPACE ======================= -->
+<main id="workspace">
+ <div id="wm-row">
+
+  <!-- LEFT COLUMN -->
+  <section id="col-left" class="col">
+    <div class="window" id="win-program">
+      <div class="titlebar">
+        <span class="tb-icon win"></span><span class="title">Program Window</span>
+        <span class="titlebar-btns"><button class="wbtn min" title="Minimize"></button><button class="wbtn max" title="Maximize"></button><button class="wbtn float" title="Float / Dock"><svg viewBox="0 0 12 12"><rect x="1" y="4.5" width="6.5" height="6.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5V1.5H11M11 1.5L7.5 5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button><button class="wbtn close" title="Close"></button></span>
+      </div>
+      <div class="window-body">
+        <div class="procbar">
+          <label>Procedure</label>
+          <select id="proc-select"><option value="main">main</option><option value="detect_features">detect_features</option><option value="acquire_demo">acquire_demo</option><option value="metrology_demo">metrology_demo</option></select>
+          <span id="proc-modified" title="Program was modified">*</span>
+          <span class="grow"></span>
+          <label>Editor</label>
+          <select id="editor-kind" title="Program Window editor">
+            <option value="classic">Classic</option>
+            <option value="monaco">VS Code (Monaco)</option>
+          </select>
+        </div>
+        <div class="code" id="program-code">
+          <div class="editor" id="editor-classic">
+            <div class="editor-gutter" id="editor-gutter"></div>
+            <div class="editor-main">
+              <pre id="editor-highlight" aria-hidden="true"></pre>
+              <textarea id="editor-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" wrap="off"></textarea>
+            </div>
+          </div>
+          <div id="editor-monaco" class="hidden"></div>
+        </div>
+        <div class="pedit">
+          <span id="pedit-mode" class="pedit-mode"></span>
+          <input id="op-input" type="text" spellcheck="false" autocomplete="off"
+                 placeholder="Insert operator line… (suggest as you type · Enter inserts at the editor cursor)">
+          <div id="ac-dropdown" class="ac-dropdown hidden"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="splitter splitter-h" data-split="left-v" id="sp-left-v"></div>
+
+    <div class="window" id="win-operator">
+      <div class="titlebar">
+        <span class="tb-icon win"></span><span class="title">Operator Window</span>
+        <span class="titlebar-btns"><button class="wbtn min"></button><button class="wbtn max"></button><button class="wbtn float" title="Float / Dock"><svg viewBox="0 0 12 12"><rect x="1" y="4.5" width="6.5" height="6.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5V1.5H11M11 1.5L7.5 5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button><button class="wbtn close"></button></span>
+      </div>
+      <div class="tabbar" id="operator-tabs">
+        <button class="tab active" data-tab="parameters">Parameters</button>
+        <button class="tab" data-tab="iconic">Iconic</button>
+        <button class="tab" data-tab="control">Control</button>
+        <button class="tab" data-tab="info">Info</button>
+      </div>
+      <div class="window-body" id="operator-body"></div>
+    </div>
+  </section>
+
+  <div class="splitter splitter-v" data-split="left"></div>
+
+  <!-- CENTER COLUMN -->
+  <section id="col-center" class="col">
+    <div class="window" id="win-graphics">
+      <div class="titlebar">
+        <span class="tb-icon win"></span><span class="title">Graphics Window</span>
+        <span class="titlebar-btns"><button class="wbtn min"></button><button class="wbtn max"></button><button class="wbtn float" title="Float / Dock"><svg viewBox="0 0 12 12"><rect x="1" y="4.5" width="6.5" height="6.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5V1.5H11M11 1.5L7.5 5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button><button class="wbtn close"></button></span>
+      </div>
+      <!-- toolbar / canvas / panels / status bar are injected by js/app.js (gfxBodyHtml),
+           so the docked window and every dev_open_window spawn are functionally identical -->
+    </div>
+
+    <div class="splitter splitter-h" data-split="center-v" id="sp-center-v"></div>
+
+    <div class="window" id="win-history">
+      <div class="titlebar">
+        <span class="tb-icon win"></span><span class="title">History</span>
+        <span class="titlebar-btns"><button class="wbtn min"></button><button class="wbtn max"></button><button class="wbtn float" title="Float / Dock"><svg viewBox="0 0 12 12"><rect x="1" y="4.5" width="6.5" height="6.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5V1.5H11M11 1.5L7.5 5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button><button class="wbtn close"></button></span>
+      </div>
+      <div class="tabbar" id="history-tabs">
+        <button class="tab active" data-tab="history">History</button>
+        <button class="tab" data-tab="errors">Error Messages</button>
+      </div>
+      <div class="window-body" id="history-body"></div>
+    </div>
+  </section>
+
+  <div class="splitter splitter-v" data-split="right"></div>
+
+  <!-- RIGHT COLUMN -->
+  <section id="col-right" class="col">
+    <div class="window" id="win-variable">
+      <div class="titlebar">
+        <span class="tb-icon win"></span><span class="title">Variable Window</span>
+        <span class="titlebar-btns"><button class="wbtn min"></button><button class="wbtn max"></button><button class="wbtn float" title="Float / Dock"><svg viewBox="0 0 12 12"><rect x="1" y="4.5" width="6.5" height="6.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5V1.5H11M11 1.5L7.5 5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button><button class="wbtn close"></button></span>
+      </div>
+      <div class="tabbar" id="variable-tabs">
+        <button class="tab active" data-tab="iconic">Iconic</button>
+        <button class="tab" data-tab="control">Control</button>
+      </div>
+      <div class="vw-bar">
+        <button class="vw-btn" id="vw-watch" title="Watch / unwatch selected variable (watches persist across runs)">Watch</button>
+        <button class="vw-btn" id="vw-plot" title="Plot selected control variable over its index (dev_inspect_ctrl 'plot')">Plot</button>
+        <button class="vw-btn" id="vw-display" title="Display selected variable (dev_display)">Display</button>
+        <button class="vw-btn" id="vw-clear" title="Remove selected variable">Clear</button>
+        <button class="vw-btn" id="vw-clearall" title="Remove all variables">Clear All</button>
+        <span class="vw-details" id="vw-details">No variables defined</span>
+      </div>
+      <div class="vw-watchlist hidden" id="vw-watchlist" title="Watched variables — click to locate, double-click to unwatch"></div>
+      <div class="window-body" id="variable-body"></div>
+    </div>
+  </section>
+ </div><!-- /wm-row -->
+ <div id="wm-taskbar"></div>
+</main>
+
+<!-- ======================= STATUS BAR ======================= -->
+<footer id="statusbar">
+  <span id="status-msg">Ready</span>
+  <span class="grow"></span>
+  <span id="status-line">Line: 1, Col: 1</span>
+  <span id="status-proc">Procedure: main</span>
+  <span id="status-mem">Mem: 0 MB</span>
+  <span id="status-build">OpenCVS HTML Demo &middot; Dark Mode</span>
+</footer>
+
+<!-- ======================= MODAL ======================= -->
+<div class="modal-overlay hidden" id="modal-overlay">
+  <div class="modal" id="modal-box">
+    <div class="modal-title" id="modal-title">About</div>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-actions"><button id="modal-ok" class="btn">OK</button></div>
+  </div>
+</div>
+
+<script src="vendor/opencv.js"></script>
+<script src="vendor/monaco/vs/loader.js"></script>
+<script src="js/opencv_ops.js"></script>
+<script src="js/metrology.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

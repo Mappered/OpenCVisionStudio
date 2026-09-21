@@ -70,3 +70,14 @@ jobs:
     with:
       source_ref: external/Aravis
       publish: true
+
+  # OpenCV is built with cmake, but only here inside the runner - see the header
+  # of build-opencv.yml. Same reason for workflow_call rather than a push
+  # trigger: the update job pushes with GITHUB_TOKEN.
+  build-opencv:
+    needs: update
+    if: inputs.subtree == 'opencv'
+    uses: ./.github/workflows/build-opencv.yml
+    with:
+      source_ref: external/OpenCV
+      publish: true

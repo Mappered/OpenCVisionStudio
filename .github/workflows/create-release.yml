@@ -79,11 +79,11 @@ jobs:
         run: |
             $BRANCH_NAME = "${{ inputs.release_type }}/${{ steps.version.outputs.version }}"
           
-          gh pr create `
-            --base Master `
-            --head $BRANCH_NAME `
-            --title "${{ inputs.release_type }}: ${{ steps.version.outputs.version }}" `
-            --body "Automated ${{ inputs.release_type }} PR for version ${{ steps.version.outputs.version }}"
+            gh pr create `
+              --base Master `
+              --head $BRANCH_NAME `
+              --title "${{ inputs.release_type }}: ${{ steps.version.outputs.version }}" `
+              --body "Automated ${{ inputs.release_type }} PR for version ${{ steps.version.outputs.version }}"
 
       - name: Workflow Summary
         shell: pwsh

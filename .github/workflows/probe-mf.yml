@@ -1,0 +1,367 @@
+# Prove that the MinGW-w64 toolchain builds and links Media Foundation code.
+#
+# Media Foundation is normally consumed with MSVC and the Windows SDK. This
+# project is MinGW-only by decision, so before writing a webcam backend we find
+# out whether that is even possible: the probe compiles, links, initialises MF,
+# enumerates video devices, and queries the camera-control interfaces that
+# set_framegrabber_param would need.
+#
+# A CI runner has no cameras, so zero devices is a pass. The value of the run is
+# that the build and link succeed and the control-discovery code paths exist and
+# are exercised up to the point where hardware is required. A developer with a
+# webcam can build the same probe locally for the real answer.
+#
+# NO EXTERNAL ACTIONS: plain commands only, per repository policy.
+
+name: Probe Media Foundation
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  # Needed to publish the test kit to the artifacts branch. The other workflows
+  # that publish use the same token and permission.
+  contents: write
+
+env:
+  PLATFORM_TAG: win-x64
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      # Only the recipe ref is needed: the probe source is part of this
+      # repository, not of a vendored subtree.
+      - name: Fetch build recipe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = '${{ github.token }}'
+          $repo  = '${{ github.repository }}'
+          git init --quiet .
+          git remote add origin "https://x-access-token:$token@github.com/$repo.git"
+          git fetch --quiet --depth 1 origin '${{ github.ref_name }}'
+          git checkout --force --quiet FETCH_HEAD
+          Write-Host "recipe commit $((git rev-parse HEAD).Trim())"
+
+      - name: Locate MSYS2
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($root in @("$env:RUNNER_TEMP\msys64", 'C:\msys64', 'D:\msys64')) {
+            if (Test-Path (Join-Path $root 'usr\bin\bash.exe')) {
+              Write-Host "using MSYS2 at $root"
+              "MSYS2_ROOT=$root" >> $env:GITHUB_ENV
+              exit 0
+            }
+          }
+          throw 'MSYS2 not found on this image'
+
+      # The publisher links against Aravis, and MSYS2 has no git of its own, so
+      # the package is fetched here and unpacked by the script. A detached
+      # worktree gives byte-exact files; redirecting `git show` in PowerShell
+      # would corrupt the zip.
+      - name: Fetch the Aravis package for the publisher
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git fetch --quiet --depth 1 origin artifacts
+          $checkout = Join-Path $env:RUNNER_TEMP 'aravis-artifacts'
+          if (Test-Path $checkout) { git worktree remove --force $checkout 2>$null }
+          git worktree add --detach $checkout origin/artifacts | Out-Null
+          $source = Join-Path $checkout 'aravis\0.9.3\win-x64\aravis-0.9.3-win-x64.zip'
+          if (-not (Test-Path $source)) { throw "aravis package not found at $source" }
+          New-Item -ItemType Directory -Force -Path 'build' | Out-Null
+          Copy-Item $source 'build\aravis-package.zip' -Force
+          git worktree remove --force $checkout
+          Write-Host ("staged Aravis package: {0:N0} bytes" -f (Get-Item 'build\aravis-package.zip').Length)
+
+      - name: Build and run the probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bash = Join-Path $env:MSYS2_ROOT 'usr\bin\bash.exe'
+          $root = ($PWD.Path -replace '\\', '/')
+          & $bash -lc "bash '$root/build/mingw/ci-mf-probe.sh' '$root'"
+          if ($LASTEXITCODE -ne 0) { throw "probe failed with exit code $LASTEXITCODE" }
+
+      # The last step of this work cannot be proven on a CI runner: the frame
+      # server on a Server SKU faults inside its own FrameServerMonitorClient
+      # module. So publish the kit and let it be run on a Windows 11 client,
+      # where a real camera device can be enumerated.
+      - name: Publish the virtual camera test kit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = '${{ github.token }}'
+          $repo  = '${{ github.repository }}'
+          $dest  = 'vcam/0.1.0/${{ env.PLATFORM_TAG }}'
+          $out   = Join-Path $PWD 'build\mf-probe'
+
+          $checkout = Join-Path $env:RUNNER_TEMP 'artifacts-repo'
+          if (Test-Path $checkout) { Remove-Item -LiteralPath $checkout -Recurse -Force }
+          git clone --quiet --branch artifacts "https://x-access-token:$token@github.com/$repo.git" $checkout
+          $dir = Join-Path $checkout ($dest -replace '/', '\')
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+          foreach ($file in @('vcamsource.dll', 'vcam-register.exe', 'vcam-read.exe', 'vcam-publisher.exe', 'vcam-sourcedrive.exe')) {
+            $from = Join-Path $out $file
+            if (-not (Test-Path $from)) { throw "missing $file - the probe did not build it" }
+            Copy-Item $from $dir -Force
+          }
+          # The trace from the CI run, kept as an example of what the frame server
+          # does with the media source; the file the client machines write is
+          # vcamsource.dll.log, next to the DLL. A trace left there by an earlier
+          # kit would otherwise look like the client's own run.
+          Remove-Item (Join-Path $dir 'vcamsource.dll.log') -Force -ErrorAction SilentlyContinue
+          Copy-Item (Join-Path $out 'vcamsource.dll.log') (Join-Path $dir 'vcamsource.dll.log.from-ci.txt') -Force -ErrorAction SilentlyContinue
+
+          # The kit is a flat directory on purpose: Windows searches the
+          # executables' own directory first, so every DLL Aravis and its
+          # dependencies need has to travel with them.
+          $sdkBin = Join-Path $PWD 'build\aravis-sdk\bin'
+          if (-not (Test-Path $sdkBin)) { throw "missing $sdkBin - the publisher build did not extract the package" }
+          Copy-Item (Join-Path $sdkBin '*.dll') $dir -Force
+          foreach ($tool in @('arv-tool-0.10.exe', 'arv-fake-gv-camera-0.10.exe')) {
+            Copy-Item (Join-Path $sdkBin $tool) $dir -Force -ErrorAction SilentlyContinue
+          }
+          $arv = Get-ChildItem -Path $dir -Filter 'libaravis-*.dll'
+          if ($arv.Count -eq 0) { throw 'the Aravis runtime DLL did not make it into the kit' }
+          Write-Host ("kit: {0} files, {1:N1} MB" -f (Get-ChildItem $dir).Count,
+                       ((Get-ChildItem $dir | Measure-Object Length -Sum).Sum / 1MB))
+
+          # Two client scripts, so the kit is usable without reading this file.
+          $live = @(
+            '@echo off',
+            'setlocal EnableExtensions',
+            'cd /d "%~dp0"',
+            '',
+            'rem The frame server reads the media source registration from HKLM, so',
+            'rem this has to run elevated.',
+            'net session >nul 2>&1',
+            'if errorlevel 1 (',
+            '  echo Requesting elevation: the media source is registered in HKLM.',
+            '  powershell -NoProfile -Command "Start-Process -FilePath ''%~f0'' -Verb RunAs"',
+            '  exit /b',
+            ')',
+            '',
+            'echo [1/3] registering the media source',
+            'vcam-register.exe register "%~dp0vcamsource.dll" || goto :failed',
+            '',
+            'echo.',
+            'echo [2/3] cameras Aravis can see',
+            'vcam-publisher.exe --list',
+            '',
+            'echo.',
+            'echo [3/3] publishing frames in a separate window',
+            'rem Optional first argument: the camera index from the list above.',
+            'set VCAM_DEVICE=%~1',
+            'powershell -NoProfile -Command "Start-Process -FilePath ''%~dp0vcam-publisher.exe'' -WorkingDirectory ''%~dp0'' -ArgumentList ''--aravis'',''--run'',$env:VCAM_DEVICE"',
+            'if errorlevel 1 goto :failed',
+            '',
+            'echo.',
+            'echo Now open the Windows Camera app and pick "OpenCVisionStudio Virtual Camera".',
+            'echo The publisher window shows the frame rate; close it or run run-stop.cmd',
+            'echo when you are done.',
+            'exit /b 0',
+            '',
+            ':failed',
+            'echo something went wrong - see the messages above.',
+            'pause',
+            'exit /b 1'
+          )
+          $live | Set-Content (Join-Path $dir 'run-live.cmd') -Encoding ascii
+
+          $stop = @(
+            '@echo off',
+            'setlocal EnableExtensions',
+            'cd /d "%~dp0"',
+            '',
+            'rem Stopping the publisher and removing the registration both need the',
+            'rem elevation the publisher was started with.',
+            'net session >nul 2>&1',
+            'if errorlevel 1 (',
+            '  powershell -NoProfile -Command "Start-Process -FilePath ''%~f0'' -Verb RunAs"',
+            '  exit /b',
+            ')',
+            '',
+            'echo stopping the publisher',
+            'taskkill /IM vcam-publisher.exe /F >nul 2>&1',
+            'echo unregistering the media source',
+            'vcam-register.exe unregister',
+            'pause'
+          )
+          $stop | Set-Content (Join-Path $dir 'run-stop.cmd') -Encoding ascii
+
+          # The verification run: register machine-wide, create the camera, read
+          # one frame, and dump both the reader's output and the media source's
+          # trace into the kit directory.
+          $verify = @(
+            '@echo off',
+            'setlocal EnableExtensions',
+            'cd /d "%~dp0"',
+            '',
+            'rem The frame server activates the media source inside its own service',
+            'rem process, which cannot read HKCU: the registration has to be machine',
+            'rem wide, and that needs elevation.',
+            'net session >nul 2>&1',
+            'if errorlevel 1 (',
+            '  echo Requesting elevation: the media source is registered in HKLM.',
+            '  powershell -NoProfile -Command "Start-Process -FilePath ''%~f0'' -Verb RunAs"',
+            '  exit /b',
+            ')',
+            '',
+            'echo [1/3] registering the media source',
+            'vcam-register.exe register "%~dp0vcamsource.dll"',
+            '',
+            'echo.',
+            'echo [2/3] creating the virtual camera, enumerating it and reading a frame',
+            'vcam-read.exe > "%~dp0vcam-read-output.txt" 2>&1',
+            'type "%~dp0vcam-read-output.txt"',
+            '',
+            'echo.',
+            'echo [3/3] what the frame server did with the media source',
+            'if exist "%~dp0vcamsource.dll.log" (',
+            '  type "%~dp0vcamsource.dll.log"',
+            ') else (',
+            '  echo (no trace: the media source was never loaded)',
+            ')',
+            '',
+            'echo.',
+            'echo vcam-read-output.txt and vcamsource.dll.log are both in this folder.',
+            'echo For a live camera feed instead of this test, run run-live.cmd.',
+            'pause'
+          )
+          $verify | Set-Content (Join-Path $dir 'run-verify.cmd') -Encoding ascii
+
+          $buildinfo = [ordered]@{
+            package      = 'vcam'
+            version      = '0.1.0'
+            platform     = '${{ env.PLATFORM_TAG }}'
+            modules      = 'IMFActivate media source, IMFMediaSourceEx, RGB32 640x480; Aravis publisher (GigE Vision/USB3 Vision) over the shared-memory frame bus'
+            toolchain    = 'x86_64-w64-mingw32, gcc 16.2.0 (see the probe run for exact versions)'
+            built_utc    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            source_commit= '${{ github.sha }}'
+            source_ref   = '${{ github.ref_name }}'
+            subtree_tree = 'n/a (this package is not built from a vendored subtree)'
+            run_url      = "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            dependencies = @{}
+          }
+          $buildinfo | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $dir 'BUILDINFO.json') -Encoding utf8
+
+          $readme = @(
+            'OpenCVisionStudio virtual camera - Aravis to webcam kit',
+            '======================================================',
+            '',
+            'What this is',
+            '  A Windows 11 user-mode virtual camera. A media source (vcamsource.dll)',
+            '  is registered under a CLSID; the virtual camera names that CLSID as its',
+            '  source id, and Media Foundation activates it to pull frames.',
+            '',
+            '  Frames come from a camera. vcam-publisher.exe owns it through Aravis',
+            '  (GigE Vision and USB3 Vision) and writes frames into a shared-memory',
+            '  bus; the media source reads that bus from inside the frame server. If',
+            '  nothing is publishing, the media source generates its own pattern, so',
+            '  the camera still comes up on a machine with no camera attached.',
+            '',
+            'Live camera as a webcam (Windows 11)',
+            '  1. run-live.cmd',
+            '     Asks for elevation, registers the media source, lists the cameras',
+            '     Aravis can see, and starts publishing in its own window. Give it a',
+            '     camera index to pick a specific one:  run-live.cmd 1',
+            '  2. Open the Windows Camera app and choose "OpenCVisionStudio Virtual',
+            '     Camera". Frames, resolution and frame rate are shown in the',
+            '     publisher window.',
+            '  3. run-stop.cmd when you are done: stops the publisher and removes the',
+            '     registration again.',
+            '',
+            'Elevation is not optional, and here is why',
+            '  The frame server CoCreates the media source inside its own service',
+            '  process. That process cannot read HKCU, so a per-user registration is',
+            '  not enough: the class has to be in HKLM, and writing HKLM needs an',
+            '  elevated prompt. With HKCU only, Media Foundation still creates an',
+            '  in-process instance while configuring the camera - which is why the',
+            '  trace looks healthy - but IMFVirtualCamera::Start then fails with',
+            '  ERROR_PATH_NOT_FOUND (0x80070003), the service having found no class.',
+            '',
+            'First check, without a camera',
+            '  run-verify.cmd',
+            '  registers, creates the virtual camera, enumerates it, reads one frame',
+            '  and leaves the reader output and the media source trace in this folder.',
+            '  This is the same thing CI does, only on a machine where the frame',
+            '  server can actually run.',
+            '',
+            'Testing without a camera',
+            '  vcam-publisher.exe --synthetic --run',
+            '  publishes generated frames through the same path, so the webcam can be',
+            '  opened before a camera is on the desk. Nothing else changes.',
+            '',
+            'Other pieces of the kit',
+            '  vcam-read.exe        creates the camera, starts it, enumerates Media',
+            '                       Foundation devices, reads one frame, removes the',
+            '                       camera. This is what CI runs; useful as a check.',
+            '  vcam-sourcedrive.exe drives the media source directly, the way the',
+            '                       frame server would, with no frame server involved:',
+            '                       it publishes a marked frame of its own and checks the',
+            '                       pixels that come back. Run it with --no-publish to',
+            '                       instead read whatever a running publisher is putting',
+            '                       on the bus - that is the camera-to-sample proof.',
+            '  vcam-register.exe    register/unregister the media source by hand.',
+            '  arv-tool-0.10.exe    Aravis own tool: "arv-tool-0.10.exe list" shows',
+            '                       what the GV/USB3 stack sees.',
+            '  arv-fake-gv-camera-0.10.exe',
+            '                       a fake GigE Vision camera, for a machine with no',
+            '                       camera at all. Start it, then run-live.cmd.',
+            '',
+            'Reading the result',
+            '  * The publisher window printing "aravis: N frames in M ms (X fps)" means',
+            '    a real camera is streaming into the bus.',
+            '  * The media source runs inside the frame server process, so it traces to',
+            '    vcamsource.dll.log next to the DLL. That file names every call the',
+            '    frame server makes into it, and whether the bus was found.',
+            '  * Camera images are scaled to the camera geometry the media source',
+            '    advertises (640x480 RGB32) with the aspect ratio preserved, so a',
+            '    512x512 or 1920x1080 sensor arrives letterboxed rather than sheared.',
+            '  * vcamsource.dll.log.from-ci.txt is the trace from the CI run.',
+            '  * On a Windows Server SKU the frame server faults inside its own',
+            '    FrameServerMonitorClient.dll before the camera comes up. That is a',
+            '    platform gap, not a defect in this kit: run it on Windows 11.'
+          )
+          $readme | Set-Content (Join-Path $dir 'README.txt') -Encoding utf8
+
+          # One download instead of twenty-three loose files. Built outside the
+          # destination so the archive cannot contain itself, and from the
+          # directory's contents so it extracts flat, the way the kit expects.
+          # The copy left by the previous run is removed first for the same
+          # reason: otherwise this run's archive would contain the last one.
+          Remove-Item (Join-Path $dir 'vcam-0.1.0-win-x64.zip') -Force -ErrorAction SilentlyContinue
+          $zip = Join-Path $env:RUNNER_TEMP 'vcam-0.1.0-win-x64.zip'
+          Remove-Item $zip -Force -ErrorAction SilentlyContinue
+          Compress-Archive -Path (Join-Path $dir '*') -DestinationPath $zip -Force
+          Copy-Item $zip (Join-Path $dir 'vcam-0.1.0-win-x64.zip') -Force
+          Write-Host ("archive: {0:N1} MB" -f ((Get-Item $zip).Length / 1MB))
+
+          Push-Location $checkout
+          try {
+            git config user.name  'GitHub Actions'
+            git config user.email 'actions@github.com'
+            git add -A
+            git diff --cached --quiet
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host 'artifacts branch already up to date'
+            } else {
+              git commit --quiet -m "vcam 0.1.0 win-x64 test kit"
+              git push --quiet origin HEAD:artifacts
+              Write-Host "published the virtual camera test kit to $dest"
+            }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'Media Foundation probe: MinGW build and link of MF code.'
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ''
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'Zero devices is expected on a runner. Run build/mingw/mf-probe.exe on a machine with a webcam for the real answer, including per-control ranges.'
