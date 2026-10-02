@@ -186,6 +186,31 @@ function fillMaskPolygon(mask, flat) {
   poly.delete();
 }
 
+/* the set pixels of a mask as a CV_32SC2 point Mat — the input format of
+   minAreaRect / convexHull.  The embedded OpenCV build has no findNonZero, so
+   the points are collected from the pixel data of the mask itself. */
+function maskPointMat(mask) {
+  const w = mask.cols, n = w * mask.rows, d = mask.data;
+  const flat = [];
+  for (let i = 0; i < n; i++) {
+    if (d[i]) { const y = (i / w) | 0; flat.push(i - y * w, y); }
+  }
+  return flat.length ? cv.matFromArray(flat.length / 2, 1, cv.CV_32SC2, flat) : null;
+}
+
+/* the four corners of a RotatedRect as [[x, y], ...] in rotational order.
+   opencv.js returns an array of {x, y}, other builds return a CV_32FC2 Mat, so
+   both shapes are accepted. */
+function rectCorners(r) {
+  const bp = cv.boxPoints(r);
+  if (bp && bp.length === 4 && typeof bp[0].x === 'number') return bp.map(p => [p.x, p.y]);
+  const f = (bp && bp.data32F) || [];
+  const c = [];
+  for (let k = 0; k < 4; k++) c.push([f[k * 2], f[k * 2 + 1]]);
+  if (bp && bp.delete) bp.delete();
+  return c;
+}
+
 /* gen_region_polygon / gen_region_polygon_filled: the closed polygon through
    the given point lists, as its outline or filled */
 function genPolygonRegion(args, ctx, op, filled) {
@@ -225,6 +250,181 @@ function imageArgName(tok) {
   return String(tok === undefined || tok === null ? '' : tok).trim().replace(/^'(.*)'$/s, '$1');
 }
 
+/* text files written by open_file / fwrite_string / close_file.  A browser page
+   cannot write to disk, so the written text is collected in memory and offered
+   as a download when the file is closed (like the "Save Program" button). */
+const OPEN_FILES = new Map();
+let FILE_SEQ = 1;
+
+/* elements of a control tuple value ('[1, 2, 3]' or a single value) */
+function controlTupleElements(v) {
+  const s = String(v === undefined || v === null ? '' : v).trim();
+  const inner = /^\[([\s\S]*)\]$/.exec(s);
+  const body = inner ? inner[1] : s;
+  return body.split(',').map(x => x.trim().replace(/^'(.*)'$/s, '$1')).filter(x => x !== '');
+}
+
+/* a control argument as a string: 'file.png', FileName, or an element of a
+   control tuple (ImageFiles[3], ImageFiles[Index+1]) — so
+   `read_image (Image, ImageFiles[Index])` resolves like in HDevelop. */
+function controlString(tok, ctx) {
+  const t = String(tok === undefined || tok === null ? '' : tok).trim();
+  const q = t.match(/^'(.*)'$/s);
+  if (q) return q[1];
+  const idx = t.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*([^\]]+)\s*\]$/);
+  if (idx && ctx && ctx.ctrl) {
+    const v = ctx.ctrl(idx[1]);
+    if (typeof v === 'string') {
+      const parts = controlTupleElements(v);
+      const k = Math.round(numArg(idx[2], ctx, NaN));
+      return (Number.isFinite(k) && k >= 0 && k < parts.length) ? parts[k] : '';
+    }
+  }
+  if (ctx && ctx.ctrl) {
+    const v = ctx.ctrl(t);
+    if (typeof v === 'string') return v.replace(/^'(.*)'$/s, '$1');
+    if (typeof v === 'number') return String(v);
+  }
+  return t;
+}
+
+/* one of a fixed set of HALCON keywords ('dark'), quoted or via a variable */
+function strKind(tok, ctx, fallback, allowed, op) {
+  const raw = (typeof MetrologyUI !== 'undefined' && MetrologyUI.strVal)
+    ? MetrologyUI.strVal(tok, ctx, fallback)
+    : String(tok === undefined || tok === null ? '' : tok).replace(/^'(.*)'$/s, '$1').trim() || fallback;
+  const v = String(raw).trim().toLowerCase();
+  if (!allowed.includes(v)) {
+    throw new Error(`${op}: expected ${allowed.map(a => `'${a}'`).join(' | ')}`);
+  }
+  return v;
+}
+
+/* HALCON string expression: 'text', a string control variable or tuple, or a
+   concatenation of them with '+'; \n, \t and \r are the documented escapes. */
+function unescapeHdev(s) {
+  return String(s).replace(/\\t/g, '\t').replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\\\/g, '\\');
+}
+
+function splitTopPlus(s) {
+  const out = [];
+  let cur = '', q = false;
+  for (const ch of s) {
+    if (ch === "'") q = !q;
+    if (ch === '+' && !q) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+function stringExpr(tok, ctx) {
+  const t = String(tok === undefined || tok === null ? '' : tok).trim();
+  const q = t.match(/^'(.*)'$/s);
+  if (q) return unescapeHdev(q[1]);
+  const plus = splitTopPlus(t);
+  if (plus.length > 1) return plus.map(p => stringExpr(p.trim(), ctx)).join('');
+  const v = ctx && ctx.ctrl ? ctx.ctrl(t) : undefined;
+  if (v !== undefined) {
+    const s = String(v).trim();
+    return /^\[[\s\S]*\]$/.test(s) ? controlTupleElements(s).join('\n') : s.replace(/^'(.*)'$/s, '$1');
+  }
+  /* an element of a control tuple ('Rows[k-1]', 'ImageFiles[3]') or a plain
+     variable name that controlString knows how to resolve */
+  if (ctx && ctx.ctrl && /^[A-Za-z_][A-Za-z0-9_]*\s*(\[[^\]]+\])?$/.test(t)) {
+    const s = controlString(t, ctx);
+    if (s !== t) return s.replace(/^'(.*)'$/s, '$1');
+  }
+  return unescapeHdev(t);
+}
+
+/* one mask cv.Mat per region of a region record: either a single 0/255 mask
+   (threshold, gen_*) or a label image together with the ids it keeps
+   (connection, select_shape).  `owned` marks the Mats the caller must delete. */
+function regionMats(rec) {
+  if (rec.mat && rec.mat.data) return [{ mask: rec.mat, owned: false }];
+  if (rec.labels && rec.w && rec.h) {
+    const ids = rec.ids || Array.from({ length: rec.count || 0 }, (_, i) => i + 1);
+    const lab = rec.labels;
+    return ids.map(id => {
+      const mask = cv.Mat.zeros(rec.h, rec.w, cv.CV_8UC1);
+      const d = mask.data;
+      for (let i = 0; i < lab.length; i++) if (lab[i] === id) d[i] = 255;
+      return { mask, owned: true };
+    });
+  }
+  return [];
+}
+
+/* numbers of an argument that may be a scalar, a literal tuple '[a, b]' or a
+   control variable holding one — HALCON's generic tuples (Min/Max of
+   select_shape, Length1/Length2 of gen_rectangle2 …) */
+function numberList(tok, ctx) {
+  const vals = (typeof MetrologyUI !== 'undefined' && MetrologyUI.listVal)
+    ? MetrologyUI.listVal(tok, ctx) : [tok];
+  return vals
+    .flatMap(v => (typeof v === 'string' && /^\[[\s\S]*\]$/.test(v.trim())) ? controlTupleElements(v) : [v])
+    .map(v => numArg(String(v), ctx, NaN));
+}
+
+/* the region features of a mask region (threshold, gen_*): area, centre and
+   bounding box are taken from the mask, so select_shape works on it as well */
+function regionFeatures(regs) {
+  if (regs.count) return regs;
+  const m = cv.moments(regs.mat, false);
+  const area = m.m00;
+  const b = cv.boundingRect(regs.mat);
+  regs.count = 1;
+  regs.ids = [1];
+  regs.areas = [0, area];
+  regs.cents = [[0, 0], [area ? m.m10 / area : 0, area ? m.m01 / area : 0]];
+  regs._boxes = [null, [b.y, b.x, b.y + b.height - 1, b.x + b.width - 1]];
+  return regs;
+}
+
+/* bounding box [row1, column1, row2, column2] of every element of a label
+   image, computed once per region record (1-based, like the element ids) */
+function labelBoxes(regs) {
+  if (regs._boxes) return regs._boxes;
+  const { labels, w, count } = regs;
+  const box = new Array((count || 0) + 1);
+  if (labels && w) {
+    for (let i = 0; i < labels.length; i++) {
+      const l = labels[i];
+      if (!l) continue;
+      const r = Math.floor(i / w), c = i - r * w;
+      const b = box[l] || (box[l] = [r, c, r, c]);
+      if (r < b[0]) b[0] = r;
+      if (c < b[1]) b[1] = c;
+      if (r > b[2]) b[2] = r;
+      if (c > b[3]) b[3] = c;
+    }
+  }
+  return (regs._boxes = box);
+}
+
+/* one region feature of select_shape, with the meaning it has in HALCON */
+function shapeFeature(regs, boxes, id, name) {
+  const f = String(name === undefined || name === null ? '' : name).trim().replace(/^'(.*)'$/s, '$1').toLowerCase();
+  const box = boxes && boxes[id];
+  const need = () => { throw new Error(`select_shape: '${f}' needs the region array of connection()`); };
+  const wdt = () => (box ? box[3] - box[1] + 1 : need());
+  const hgt = () => (box ? box[2] - box[0] + 1 : need());
+  switch (f) {
+    case 'area':    return regs.areas[id];
+    case 'row':     return regs.cents[id][1];
+    case 'column':  return regs.cents[id][0];
+    case 'row1':    return box ? box[0] : need();
+    case 'row2':    return box ? box[2] : need();
+    case 'column1': return box ? box[1] : need();
+    case 'column2': return box ? box[3] : need();
+    case 'width':   return wdt();
+    case 'height':  return hgt();
+    case 'ratio': { const h = hgt(); return h ? wdt() / h : 0; }
+    default:
+      throw new Error(`select_shape: feature '${f}' is not implemented in this build`);
+  }
+}
+
 function registerImageSource(name, canvas, builtin) {
   const rec = { name, canvas, builtin: !!builtin, w: canvas.width, h: canvas.height };
   IMAGE_SOURCES.set(name, rec);
@@ -237,8 +437,18 @@ function registerImageSource(name, canvas, builtin) {
 const OP_IMPLS = {
 
   read_image(args, ctx) {
-    const want = imageArgName(args[1]);
+    const want = controlString(args[1], ctx);
     const known = IMAGE_SOURCES.get(want);
+    /* `read_image (Image, ImageFiles[3])` with fewer files: name the element
+       that does not exist instead of just reporting an empty file name */
+    const argTok = String(args[1] === undefined || args[1] === null ? '' : args[1]).trim();
+    const idxTok = argTok.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*([^\]]+)\s*\]$/);
+    if (idxTok && !known) {
+      const tup = ctx.ctrl ? ctx.ctrl(idxTok[1]) : undefined;
+      const n = typeof tup === 'string' ? controlTupleElements(tup).length : 0;
+      ctx.log(`read_image: ${argTok} is out of range — '${idxTok[1]}' has ${n} element(s)` +
+        (n ? ` (valid index 0…${n - 1})` : '') + '.', 'warn');
+    }
     const src = cv.imread(known ? known.canvas : ctx.syntheticImage());
     const gray = new cv.Mat();
     cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
@@ -309,19 +519,40 @@ const OP_IMPLS = {
     });
   },
 
-  select_shape(args, ctx) {                                // feature 'area', 'and', Min..Max
-    const regs = ctx.iconic(args[0]);
-    const min = +args[4], max = +args[5];
+  /* Region, SelectedRegions, Features, Operation, Min, Max — Features, Min and
+     Max are tuples of the same length ('area' 1000..100000, or ['width',
+     'ratio'] with a pair of limits each). */
+  select_shape(args, ctx) {
+    const regs = regionFeatures(ctx.iconic(args[0]));
+    const feats = (typeof MetrologyUI !== 'undefined' && MetrologyUI.listVal)
+      ? MetrologyUI.listVal(args[2], ctx).map(String)
+      : [String(args[2] === undefined ? 'area' : args[2])];
+    const op = strKind(args[3], ctx, 'and', ['and', 'or'], 'select_shape');
+    const mins = numberList(args[4], ctx), maxs = numberList(args[5], ctx);
+    if (!feats.length || mins.some(v => !Number.isFinite(v)) || maxs.some(v => !Number.isFinite(v))) {
+      throw new Error('select_shape: Features/Min/Max must be feature names and matching numbers');
+    }
+    const boxes = labelBoxes(regs);
     const ids = [];
-    for (let l = 1; l <= regs.count; l++)
-      if (regs.areas[l] >= min && regs.areas[l] <= max) ids.push(l);
-    ctx.defIconic(args[1], {
+    for (let l = 1; l <= regs.count; l++) {
+      let hit = null;
+      for (let k = 0; k < feats.length; k++) {
+        const lo = mins[Math.min(k, mins.length - 1)], hi = maxs[Math.min(k, maxs.length - 1)];
+        const v = shapeFeature(regs, boxes, l, feats[k]);
+        const ok = v >= lo && v <= hi;
+        hit = hit === null ? ok : (op === 'and' ? hit && ok : hit || ok);
+      }
+      if (hit) ids.push(l);
+    }
+    const out = {
       kind: 'selected', type: `region array (${ids.length})`,
       count: ids.length, ids, labels: regs.labels, areas: regs.areas, cents: regs.cents,
       w: regs.w, h: regs.h,
-      canvas: ocvLabelsToOverlay(regs.labels, regs.w, regs.h, ids),
       dispose() {},
-    });
+    };
+    if (regs.labels) out.canvas = ocvLabelsToOverlay(regs.labels, regs.w, regs.h, ids);
+    if (regs.mat && ids.length) { out.mat = regs.mat; if (!out.canvas) out.canvas = regs.canvas; }
+    ctx.defIconic(args[1], out);
   },
 
   count_obj(args, ctx) {
@@ -681,6 +912,272 @@ const OP_IMPLS = {
     releaseGrabber(g);
     GRABBERS.delete(handle);
     ctx.log(`close_framegrabber: handle ${handle} closed, camera released.`);
+  },
+
+  /* ---- operators of imported HDevelop programs ---------------------------
+     The small, frequently used part of the "system"/"file"/"tools" operator
+     families that HDevelop example programs rely on. */
+
+  dev_update_on(args, ctx) {
+    ctx.setUpdateWindow(true);
+    ctx.log('dev_update_on: automatic display of iconic operator results on.');
+  },
+
+  dev_update_off(args, ctx) {
+    ctx.setUpdateWindow(false);
+    ctx.log('dev_update_off: automatic display of iconic operator results off.');
+  },
+
+  list_image_files(args, ctx) {                            // Directory, Extensions, Options : ImageFiles
+    /* a page cannot enumerate a folder, so the image files of the session are
+       listed: the built-in demo image plus every file loaded with "Load file…".
+       HALCON sorts the names ('default' sort order), so they are sorted here as
+       well — ImageFiles[0] is then the first name in the folder. */
+    const sortNames = (a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' });
+    const names = Array.from(IMAGE_SOURCES.keys()).sort(sortNames);
+    if (!names.length) names.push(BUILTIN_IMAGE);
+    ctx.defCtrl(args[3], `[${names.map(n => `'${n}'`).join(', ')}]`,
+      names.length === 1 ? 'string' : `string tuple (${names.length})`);
+    ctx.log(`list_image_files: ${names.length} image file(s) available (${names.map(n => `'${n}'`).join(', ')}).`);
+    if (names.length < 5) {
+      ctx.log("list_image_files: a page cannot read a folder — load the image files of the program's " +
+        'folder with "Load file…" to make ImageFiles[0…n] available.', 'warn');
+    }
+  },
+
+  mean_image(args, ctx) {                                  // Image : ImageMean : MaskWidth, MaskHeight
+    const img = ctx.iconic(args[0]);
+    let w = Math.round(numArg(args[2], ctx, 9)), h = Math.round(numArg(args[3], ctx, 9));
+    if (!(w >= 1)) w = 9;
+    if (!(h >= 1)) h = 9;
+    if (w % 2 === 0) w++;
+    if (h % 2 === 0) h++;
+    const dst = new cv.Mat();
+    cv.blur(img.mat, dst, new cv.Size(w, h));
+    ctx.defIconic(args[1], {
+      kind: 'image', type: 'image (byte)',
+      mat: dst, canvas: ocvGrayToCanvas(dst),
+      gray: dst.data.slice(0, dst.cols * dst.rows),
+      dispose() { dst.delete(); },
+    });
+    ctx.log(`mean_image: ${w}x${h} mean filter applied (byte image).`);
+  },
+
+  dyn_threshold(args, ctx) {              // OrigImage, ThresholdImage : RegionDynThresh : Offset, LightDark
+    const orig = ctx.iconic(args[0]);
+    const thr = ctx.iconic(args[1]);
+    if (orig.mat.cols !== thr.mat.cols || orig.mat.rows !== thr.mat.rows) {
+      throw new Error('dyn_threshold: OrigImage and ThresholdImage must have the same size');
+    }
+    const offset = numArg(args[3], ctx, 5);
+    const mode = strKind(args[4], ctx, 'light', ['light', 'dark', 'equal', 'not_equal'], 'dyn_threshold');
+    const diff = new cv.Mat(), dst = new cv.Mat();
+    if (mode === 'light') {                                // g > ThresholdImage + Offset
+      cv.subtract(orig.mat, thr.mat, diff);
+      cv.threshold(diff, dst, offset, 255, cv.THRESH_BINARY);
+    } else if (mode === 'dark') {                          // g < ThresholdImage - Offset
+      cv.subtract(thr.mat, orig.mat, diff);
+      cv.threshold(diff, dst, offset, 255, cv.THRESH_BINARY);
+    } else if (mode === 'equal') {                         // |g - ThresholdImage| <= Offset
+      cv.absdiff(orig.mat, thr.mat, diff);
+      cv.threshold(diff, dst, offset, 255, cv.THRESH_BINARY_INV);
+    } else {                                               // 'not_equal'
+      cv.absdiff(orig.mat, thr.mat, diff);
+      cv.threshold(diff, dst, offset, 255, cv.THRESH_BINARY);
+    }
+    diff.delete();
+    ctx.defIconic(args[2], {
+      kind: 'region', type: 'region', mat: dst,
+      canvas: ocvMaskToOverlay(dst, 236, 70, 60),
+      dispose() { dst.delete(); },
+    });
+    ctx.log(`dyn_threshold: region from the local threshold (Offset ${offset}, LightDark '${mode}').`);
+  },
+
+  select_shape_std(args, ctx) {                            // Regions : SelectedRegions : Shape, Percent
+    const regs = ctx.iconic(args[0]);
+    const feature = strKind(args[2], ctx, 'max_area',
+      ['max_area', 'min_area', 'original', 'rectangle1', 'rectangle2'], 'select_shape_std');
+    if (feature === 'original') { ctx.defIconic(args[1], regs); return; }
+    if (!regs.labels || !regs.count) {
+      ctx.defIconic(args[1], regs);                        // a single region is trivially extreme
+      ctx.log(`select_shape_std ('${feature}'): the single input region is selected.`);
+      return;
+    }
+    const ids = regs.ids || Array.from({ length: regs.count }, (_, i) => i + 1);
+    if (!ids.length) throw new Error('select_shape_std: the input region array is empty');
+    const area = id => (regs.areas && Number.isFinite(regs.areas[id])) ? regs.areas[id] : 0;
+    const select = sel => ctx.defIconic(args[1], {
+      kind: 'selected', type: `region array (${sel.length})`, count: sel.length, ids: sel,
+      labels: regs.labels, areas: regs.areas, cents: regs.cents, w: regs.w, h: regs.h,
+      canvas: ocvLabelsToOverlay(regs.labels, regs.w, regs.h, sel),
+      dispose() {},
+    });
+    if (feature === 'max_area' || feature === 'min_area') {
+      let best = ids[0];
+      for (const id of ids) {
+        if (feature === 'max_area' ? area(id) > area(best) : area(id) < area(best)) best = id;
+      }
+      select([best]);
+      ctx.log(`select_shape_std ('${feature}'): region ${best} of ${ids.length} selected (area ${area(best)}).`);
+      return;
+    }
+    /* 'rectangle1' / 'rectangle2': HALCON adopts a region when its area
+       differs from the area of the enclosing rectangle by more than
+       Percent percent. */
+    const percent = numArg(args[3], ctx, 70);
+    const boxes = labelBoxes(regs);
+    const masks = feature === 'rectangle2' ? regionMats(regs) : null;
+    const sel = [];
+    try {
+      ids.forEach((id, k) => {
+        let rectArea = 0;
+        if (feature === 'rectangle1') {
+          const box = boxes && boxes[id];
+          if (!box) return;
+          rectArea = (box[3] - box[1] + 1) * (box[2] - box[0] + 1);
+        } else {
+          const m = masks && masks[k];
+          const pts = m ? maskPointMat(m.mask) : null;
+          if (!pts) return;
+          const r = cv.minAreaRect(pts);
+          pts.delete();
+          rectArea = r.size.width * r.size.height;
+        }
+        const diff = rectArea > 0 ? 100 * (rectArea - area(id)) / rectArea : 0;
+        if (diff > percent) sel.push(id);
+      });
+    } finally {
+      if (masks) masks.forEach(m => { if (m.owned) m.mask.delete(); });
+    }
+    select(sel);
+    ctx.log(`select_shape_std ('${feature}'): ${sel.length} of ${ids.length} region(s) selected ` +
+      `(area difference > ${percent}%).`);
+  },
+
+  smallest_rectangle2(args, ctx) {   // Regions : Row, Column, Phi, Length1, Length2
+    const rec = ctx.iconic(args[0]);
+    const regions = regionMats(rec);
+    if (!regions.length) throw new Error('smallest_rectangle2: the input contains no region');
+    const Row = [], Column = [], Phi = [], L1 = [], L2 = [];
+    for (const { mask, owned } of regions) {
+      const pts = maskPointMat(mask);
+      if (owned) mask.delete();
+      if (pts) {
+        const r = cv.minAreaRect(pts);
+        /* minAreaRect: centre and size of the smallest enclosing rectangle.
+           HALCON wants Phi of the longer side, Length1 >= Length2 and half edge
+           lengths — the corners are used instead of the (OpenCV version
+           dependent) angle of minAreaRect, see boxPoints. */
+        const c = rectCorners(r);
+        pts.delete();
+        let edge = 0, len = -1;
+        for (let k = 0; k < 4; k++) {
+          const a = c[k], b = c[(k + 1) % 4];
+          const l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+          if (l > len) { len = l; edge = k; }
+        }
+        const a = c[edge], b = c[(edge + 1) % 4];
+        let phi = Math.atan2(b[1] - a[1], b[0] - a[0]);
+        while (phi > Math.PI / 2) phi -= Math.PI;
+        while (phi <= -Math.PI / 2) phi += Math.PI;
+        Row.push((c[0][1] + c[1][1] + c[2][1] + c[3][1]) / 4);
+        Column.push((c[0][0] + c[1][0] + c[2][0] + c[3][0]) / 4);
+        Phi.push(phi);
+        L1.push(len / 2);
+        L2.push(Math.hypot(c[(edge + 2) % 4][0] - b[0], c[(edge + 2) % 4][1] - b[1]) / 2);
+      } else {
+        pts && pts.delete();
+      }
+    }
+    MetrologyUI.defTuple(ctx, args[1], Row, 'real');
+    MetrologyUI.defTuple(ctx, args[2], Column, 'real');
+    MetrologyUI.defTuple(ctx, args[3], Phi, 'real');
+    MetrologyUI.defTuple(ctx, args[4], L1, 'real');
+    MetrologyUI.defTuple(ctx, args[5], L2, 'real');
+    ctx.log(`smallest_rectangle2: enclosing rectangle(s) computed for ${Row.length} region(s).`);
+  },
+
+  distance_pp(args, ctx) {                       // Row1, Column1, Row2, Column2 : Distance
+    const r1 = numArgList(args[0], ctx), c1 = numArgList(args[1], ctx);
+    const r2 = numArgList(args[2], ctx), c2 = numArgList(args[3], ctx);
+    if (!r1.length || !c1.length || !r2.length || !c2.length) {
+      throw new Error('distance_pp: Row1, Column1, Row2, Column2 must be numbers or tuples of numbers');
+    }
+    const at = (l, i) => l[Math.min(i, l.length - 1)];
+    const n = Math.max(r1.length, c1.length, r2.length, c2.length);
+    const d = [];
+    for (let i = 0; i < n; i++) d.push(Math.hypot(at(r1, i) - at(r2, i), at(c1, i) - at(c2, i)));
+    MetrologyUI.defTuple(ctx, args[4], d, 'real');
+  },
+
+  angle_lx(args, ctx) {                          // Row1, Column1, Row2, Column2 : Angle
+    const r1 = numArgList(args[0], ctx), c1 = numArgList(args[1], ctx);
+    const r2 = numArgList(args[2], ctx), c2 = numArgList(args[3], ctx);
+    if (!r1.length || !c1.length || !r2.length || !c2.length) {
+      throw new Error('angle_lx: Row1, Column1, Row2, Column2 must be numbers or tuples of numbers');
+    }
+    const at = (l, i) => l[Math.min(i, l.length - 1)];
+    const n = Math.max(r1.length, c1.length, r2.length, c2.length);
+    const a = [];
+    for (let i = 0; i < n; i++) {
+      a.push(Math.atan2(at(r2, i) - at(r1, i), at(c2, i) - at(c1, i)));
+    }
+    MetrologyUI.defTuple(ctx, args[4], a, 'real');
+  },
+
+  parse_filename(args, ctx) {              // FileName : : BaseName, Extension, Directory
+    const full = controlString(args[0], ctx);
+    const norm = String(full).replace(/\\/g, '/');
+    const slash = norm.lastIndexOf('/');
+    const dir = slash >= 0 ? norm.slice(0, slash + 1) : '';
+    const file = slash >= 0 ? norm.slice(slash + 1) : norm;
+    const dot = file.lastIndexOf('.');
+    const base = dot > 0 ? file.slice(0, dot) : file;
+    const ext = dot > 0 ? file.slice(dot) : '';
+    ctx.defCtrl(args[1], base, 'string');
+    ctx.defCtrl(args[2], ext, 'string');
+    ctx.defCtrl(args[3], dir, 'string');
+    ctx.log(`parse_filename: '${full}' — base '${base}', extension '${ext}', directory '${dir}'.`);
+  },
+
+  open_file(args, ctx) {                   // FileName, FileType : FileHandle
+    const name = controlString(args[0], ctx);
+    const type = strKind(args[1], ctx, 'output', ['output', 'input'], 'open_file');
+    if (type === 'input') throw new Error("open_file: only 'output' files are supported in this build");
+    const handle = FILE_SEQ++;
+    OPEN_FILES.set(handle, { name, chunks: [] });
+    ctx.defCtrl(args[2], handle, 'integer');
+    ctx.log(`open_file: '${name}' opened for output (handle ${handle}).`);
+  },
+
+  fwrite_string(args, ctx) {               // FileHandle, String
+    const handle = Math.round(numArg(args[0], ctx, NaN));
+    const f = OPEN_FILES.get(handle);
+    if (!f) throw new Error(`fwrite_string: invalid file handle ${args[0]}`);
+    f.chunks.push(stringExpr(args[1], ctx));
+  },
+
+  close_file(args, ctx) {                  // FileHandle
+    const handle = Math.round(numArg(args[0], ctx, NaN));
+    const f = OPEN_FILES.get(handle);
+    if (!f) throw new Error(`close_file: invalid file handle ${args[0]}`);
+    OPEN_FILES.delete(handle);
+    const text = f.chunks.join('');
+    let saved = false;
+    try {                                  // a page cannot write to disk: offer a download instead
+      const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = String(f.name).split(/[\\/]/).pop() || 'output.txt';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      saved = true;
+    } catch (e) { /* download blocked — the log message still names the file */ }
+    ctx.log(`close_file: '${f.name}' closed — ${text.length} character(s) written` +
+      (saved ? ', offered as download.' : '.'));
   },
 };
 

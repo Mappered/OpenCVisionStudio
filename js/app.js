@@ -473,6 +473,113 @@ const OPINFO = {
     params: [['AcqHandle', 'input', 'control']],
     desc: 'Closes the frame grabber and releases the camera.',
   },
+  /* ---- operators of imported HDevelop programs ---------------------------
+     The part of the system/file operator families that HDevelop example
+     programs use most (dev_update_on/off, list_image_files, parse_filename,
+     the text file operators) plus the image/region/geometry operators of the
+     classic "find the object, measure it" workflow. */
+  dev_update_on: {
+    params: [],
+    desc: `Turns the automatic display of iconic operator results in the active
+           graphics window on — the same as
+           <code>dev_update_window('on')</code>.`,
+  },
+  dev_update_off: {
+    params: [],
+    desc: `Turns the automatic display off, so only explicitly displayed objects
+           become visible — the same as
+           <code>dev_update_window('off')</code>. Used in measurement loops,
+           where only the final result is displayed.`,
+  },
+  list_image_files: {
+    params: [['ImageDirectory', 'input', 'control'],
+             ['Extensions', 'input', 'control'], ['Options', 'input', 'control'],
+             ['ImageFiles', 'output', 'control']],
+    desc: `Returns the image files read_image can read as a string tuple. In this
+           browser build that is the built-in demo image plus every file loaded
+           through the Operator Window of read_image; directory, extension and
+           options are accepted for compatibility.`,
+  },
+  mean_image: {
+    params: [['Image', 'input', 'iconic'], ['ImageMean', 'output', 'iconic'],
+             ['MaskWidth', 'input', 'control'], ['MaskHeight', 'input', 'control']],
+    desc: `Smooths <code>Image</code> with a mean (box) filter of size
+           <code>MaskWidth</code> &times; <code>MaskHeight</code> and returns the
+           smoothed image. The usual preprocessing step before
+           dyn_threshold.`,
+  },
+  dyn_threshold: {
+    params: [['OrigImage', 'input', 'iconic'], ['ThresholdImage', 'input', 'iconic'],
+             ['RegionDynThresh', 'output', 'iconic'], ['Offset', 'input', 'control'],
+             ['LightDark', 'input', 'control']],
+    desc: `Segments the pixels of <code>OrigImage</code> whose gray value differs
+           from the locally smoothed <code>ThresholdImage</code> by more than
+           <code>Offset</code>. <code>LightDark</code> selects what is returned:
+           <code>'light'</code>, <code>'dark'</code>, <code>'equal'</code> or
+           <code>'not_equal'</code>.`,
+  },
+  select_shape_std: {
+    params: [['Regions', 'input', 'iconic'], ['SelectedRegions', 'output', 'iconic'],
+             ['ShapeFeature', 'input', 'control'], ['Percent', 'input', 'control', '70']],
+    desc: `Selects regions by a standard shape: <code>'max_area'</code> (the
+           largest region, as in HALCON without using <code>Percent</code>),
+           <code>'rectangle1'</code> / <code>'rectangle2'</code> (a region whose
+           area differs from its enclosing axis&#8209;parallel resp. smallest
+           rotated rectangle by more than <code>Percent</code> percent), plus
+           <code>'min_area'</code> (the smallest) and <code>'original'</code>
+           (all regions) as extensions.`,
+  },
+  smallest_rectangle2: {
+    params: [['Regions', 'input', 'iconic'], ['Row', 'output', 'control'],
+             ['Column', 'output', 'control'], ['Phi', 'output', 'control'],
+             ['Length1', 'output', 'control'], ['Length2', 'output', 'control']],
+    desc: `Smallest enclosing rectangle of every input region: the centre
+           (<code>Row</code>, <code>Column</code>), the orientation
+           <code>Phi</code> (radians, measured from the column axis) and the
+           <em>half</em> side lengths <code>Length1</code> &ge;
+           <code>Length2</code>.`,
+  },
+  distance_pp: {
+    params: [['Row1', 'input', 'control'], ['Column1', 'input', 'control'],
+             ['Row2', 'input', 'control'], ['Column2', 'input', 'control'],
+             ['Distance', 'output', 'control']],
+    desc: `Distance between the points (<code>Row1</code>, <code>Column1</code>)
+           and (<code>Row2</code>, <code>Column2</code>). Coordinates may be
+           tuples, then the result is a tuple as well.`,
+  },
+  angle_lx: {
+    params: [['Row1', 'input', 'control'], ['Column1', 'input', 'control'],
+             ['Row2', 'input', 'control'], ['Column2', 'input', 'control'],
+             ['Angle', 'output', 'control']],
+    desc: `Angle of the line from (<code>Row1</code>, <code>Column1</code>) to
+           (<code>Row2</code>, <code>Column2</code>) with respect to the
+           horizontal axis, in radians (&minus;&pi; … &pi;).`,
+  },
+  parse_filename: {
+    params: [['FileName', 'input', 'control'], ['BaseName', 'output', 'control'],
+             ['Extension', 'output', 'control'], ['Directory', 'output', 'control']],
+    desc: `Splits a file name into its base name, its extension
+           (including the dot) and the directory (including the trailing
+           separator).`,
+  },
+  open_file: {
+    params: [['FileName', 'input', 'control'], ['FileType', 'input', 'control'],
+             ['FileHandle', 'output', 'control']],
+    desc: `Opens a text file for writing and returns a file handle. A browser
+           page cannot write to disk, so this build collects the written text
+           and offers it as a download when the file is closed.`,
+  },
+  fwrite_string: {
+    params: [['FileHandle', 'input', 'control'], ['String', 'input', 'control']],
+    desc: `Appends the text <code>String</code> to an open file, including the
+           escapes <code>\\n</code> and <code>\\t</code>; a control tuple is
+           written one element per line.`,
+  },
+  close_file: {
+    params: [['FileHandle', 'input', 'control']],
+    desc: `Closes an open file. In this browser build the text collected by
+           fwrite_string is offered as a download.`,
+  },
   stop:     { params: [], desc: 'Stops program execution.' },
   return:   { params: [], desc: 'Returns from the current procedure.' },
   if:       { params: [['Condition', 'input', 'control']], desc: 'Conditional statement.' },
@@ -519,13 +626,20 @@ const state = {
   histTab: 'history',
   selectedVar: null,
   selectedCtrl: null,
-  editorKind: 'classic',      // 'classic' | 'monaco' (VS Code editor)
+  editorKind: 'monaco',       // 'classic' | 'monaco' (VS Code editor) — VS Code is the default
   watch: new Set(),           // watched variable names (persist across runs)
   plotVar: null,              // control variable shown in the plot panel
   updateWindow: true,         // dev_update_window: display operator results automatically
   unknownOps: new Set(),      // operators reported as not implemented (once per name)
   errorLine: null,            // { proc, line, text } of the line that stopped the run
   progFile: 'program.odev',   // file name of the current program (Open/Save Program)
+  /* control flow of the structured statements: the program counter normally
+     advances to the next executable line, but for/while/endfor/if/endif and
+     procedure calls jump.  `nextPc` is undefined for "just go on". */
+  nextPc: undefined,
+  frames: [],                 // call stack of user procedures
+  loops: [],                  // open for/while blocks of the running procedure
+  branches: new Map(),        // "proc:ifLine" -> { endif, taken }
 };
 
 /* HALCON control-flow keywords and statements: not operators, never reported
@@ -533,6 +647,12 @@ const state = {
 const HD_KEYWORDS = new Set(['if', 'else', 'elseif', 'endif', 'for', 'endfor', 'while', 'endwhile',
   'repeat', 'until', 'break', 'continue', 'return', 'stop', 'exit', 'try', 'catch', 'endtry',
   'switch', 'case', 'endswitch', 'default', 'global', 'throw', 'assert', 'comment']);
+
+/* statements the processor executes itself: not operator calls (mostly without
+   parentheses), but they must be stepped onto all the same — every other
+   keyword (global, comment, assert …) is simply skipped. */
+const CONTROL_WORDS = new Set(['if', 'elseif', 'else', 'endif', 'for', 'endfor', 'while',
+  'endwhile', 'repeat', 'until', 'break', 'continue', 'return', 'stop', 'exit']);
 
 const linesOf = proc => PROCEDURES[proc].lines;
 const lineText = (proc, n) => linesOf(proc)[n - 1];
@@ -556,6 +676,394 @@ function parseLine(text) {
 }
 const isComment  = t => /^\s*\*/.test(t);
 
+/* ==========================================================================
+   CONTROL EXPRESSIONS
+   The right-hand sides of assignments, the bounds of for loops and the
+   conditions of if/while/until statements: numbers, strings, tuples,
+   + - * / %, comparisons, and/or/not, |Tuple|, Tuple[i] and the intrinsic
+   functions.  A value is a plain JS number, string or array of them — exactly
+   what a HALCON tuple is.  Nothing is ever eval()'d.
+   ========================================================================== */
+const NUM_RE = /^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/;
+const isArr = v => Array.isArray(v);
+const asNum = x => {
+  const n = typeof x === 'number' ? x : parseFloat(String(x).trim());
+  if (!Number.isFinite(n)) throw new Error(`'${x}' is not a number`);
+  return n;
+};
+const elemAt = (v, k) => (isArr(v) ? v[Math.min(k, v.length - 1)] : v);
+const each1 = (v, f) => (isArr(v) ? v.map(f) : f(v));
+const each2 = (a, b, f) => {
+  if (!isArr(a) && !isArr(b)) return f(a, b);
+  const n = Math.max(isArr(a) ? a.length : 1, isArr(b) ? b.length : 1);
+  const out = [];
+  for (let k = 0; k < n; k++) out.push(f(elemAt(a, k), elemAt(b, k)));
+  return out;
+};
+
+/* number -> text the way HDevelop writes it into a string (shortest of six
+   significant digits, integers without a decimal point) */
+function hdevNum(n) {
+  if (!Number.isFinite(n)) return String(n);
+  if (Number.isInteger(n)) return String(n);
+  return String(Number(n.toPrecision(6)));
+}
+/* value -> the text a HALCON string concatenation appends (a tuple is joined
+   with newlines, which is what fwrite_string writes into a file) */
+const hdevText = v => (isArr(v)
+  ? v.map(hdevText).join('\n')
+  : (typeof v === 'number' ? hdevNum(v) : String(v === undefined || v === null ? '' : v)));
+/* truth of a condition: like HDevelop, only a non-zero number is true */
+const truthy = v => (isArr(v) ? truthy(v[0]) : typeof v === 'number' ? v !== 0 : asNum(v) !== 0);
+
+/* HALCON text of a control value — the form the variable list shows */
+function ctrlElemText(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : '0';
+  const s = String(v === undefined || v === null ? '' : v);
+  return (/[,\[\]']/.test(s) || s !== s.trim() || NUM_RE.test(s)) ? `'${s.replace(/'/g, "''")}'` : s;
+}
+const ctrlText = v => (isArr(v) ? `[${v.map(ctrlElemText).join(', ')}]` : ctrlElemText(v));
+const ctrlType = v => (isArr(v)
+  ? `${typeof v[0] === 'number' ? 'number' : 'string'} tuple (${v.length})`
+  : (typeof v === 'number' ? (Number.isInteger(v) ? 'integer' : 'real') : 'string'));
+
+/* splits a tuple literal on its top-level commas, ignoring brackets and quotes */
+function splitTopCommas(s) {
+  const out = [];
+  let cur = '', q = false, depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (q) {
+      if (ch === "'") { if (s[i + 1] === "'") { cur += "''"; i++; } else q = false; }
+      cur += ch;
+      continue;
+    }
+    if (ch === "'") { q = true; cur += ch; continue; }
+    if (ch === '[') depth++;
+    else if (ch === ']') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  return out;
+}
+
+/* one element of a stored tuple -> number or string */
+function ctrlElemValue(s) {
+  const t = String(s).trim();
+  const q = /^'(.*)'$/s.exec(t);
+  if (q) return q[1].replace(/''/g, "'");
+  if (NUM_RE.test(t)) return +t;
+  return t;
+}
+
+/* current value of a control variable as a JS value (number, string, array) */
+function ctrlJsValue(name) {
+  const rec = state.ctrl.get(name);
+  if (!rec) return undefined;
+  const v = rec.value;
+  if (typeof v === 'number') return v;
+  const s = String(v === undefined || v === null ? '' : v).trim();
+  if (/^\[[\s\S]*\]$/.test(s)) {
+    const body = s.slice(1, -1).trim();
+    return body ? splitTopCommas(body).map(ctrlElemValue) : [];
+  }
+  return ctrlElemValue(s);
+}
+
+/* the intrinsic functions available in a HALCON expression */
+const CTRL_FUNCS = {
+  abs:   a => each1(a[0], Math.abs),
+  rad:   a => each1(a[0], x => asNum(x) * Math.PI / 180),
+  deg:   a => each1(a[0], x => asNum(x) * 180 / Math.PI),
+  sin:   a => each1(a[0], x => Math.sin(asNum(x))),
+  cos:   a => each1(a[0], x => Math.cos(asNum(x))),
+  tan:   a => each1(a[0], x => Math.tan(asNum(x))),
+  asin:  a => each1(a[0], x => Math.asin(asNum(x))),
+  acos:  a => each1(a[0], x => Math.acos(asNum(x))),
+  atan:  a => each1(a[0], x => Math.atan(asNum(x))),
+  atan2: a => Math.atan2(asNum(a[0]), asNum(a[1])),
+  sqrt:  a => each1(a[0], x => Math.sqrt(asNum(x))),
+  exp:   a => each1(a[0], x => Math.exp(asNum(x))),
+  log:   a => each1(a[0], x => Math.log(asNum(x))),
+  pow:   a => Math.pow(asNum(a[0]), asNum(a[1])),
+  round: a => each1(a[0], x => Math.round(asNum(x))),
+  int:   a => each1(a[0], x => Math.trunc(asNum(x))),
+  floor: a => each1(a[0], x => Math.floor(asNum(x))),
+  ceil:  a => each1(a[0], x => Math.ceil(asNum(x))),
+  real:  a => each1(a[0], asNum),
+  min:   a => (isArr(a[0]) ? Math.min(...a[0]) : Math.min(...a.map(asNum))),
+  max:   a => (isArr(a[0]) ? Math.max(...a[0]) : Math.max(...a.map(asNum))),
+  sum:   a => (isArr(a[0]) ? a[0].reduce((s, x) => s + asNum(x), 0) : asNum(a[0])),
+  strlen: a => hdevText(a[0]).length,
+  string: a => hdevText(a[0]),
+  number: a => asNum(a[0]),
+};
+
+/* Evaluation of a HALCON control expression.  Throws with a readable message
+   on anything it cannot evaluate. */
+function parseCtrlExpr(src) {
+  const s = String(src);
+  const whole = s.trim();
+  let i = 0;
+  const fail = msg => { throw new Error(`${msg} in "${whole}"`); };
+  const ws = () => { while (i < s.length && /\s/.test(s[i])) i++; };
+
+  function readString() {                             // the quote is at s[i]
+    i++;
+    let out = '';
+    while (i < s.length) {
+      const ch = s[i];
+      if (ch === "'") {
+        if (s[i + 1] === "'") { out += "'"; i += 2; continue; }
+        i++;
+        return out;
+      }
+      if (ch === '\\') {
+        const n = s[i + 1];
+        out += n === 'n' ? '\n' : n === 't' ? '\t' : n === 'r' ? '\r' : n === undefined ? '\\' : n;
+        i += 2;
+        continue;
+      }
+      out += ch;
+      i++;
+    }
+    fail('unterminated string');
+  }
+
+  function primary() {
+    ws();
+    const ch = s[i];
+    if (ch === '(') {
+      i++;
+      const v = expr();
+      ws();
+      if (s[i] !== ')') fail("missing ')'");
+      i++;
+      return v;
+    }
+    if (ch === '[') {                                 // tuple […], concatenating nested tuples
+      i++;
+      const parts = [];
+      ws();
+      if (s[i] !== ']') for (;;) {
+        const v = expr();
+        if (isArr(v)) parts.push(...v); else parts.push(v);
+        ws();
+        if (s[i] === ',') { i++; continue; }
+        break;
+      }
+      ws();
+      if (s[i] !== ']') fail("missing ']'");
+      i++;
+      return parts;
+    }
+    if (ch === '|') {                                 // |Tuple| = number of elements
+      i++;
+      const v = expr();
+      ws();
+      if (s[i] !== '|') fail("missing '|'");
+      i++;
+      return isArr(v) ? v.length : 1;
+    }
+    if (ch === "'") return readString();
+    const num = /^(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/.exec(s.slice(i));
+    if (num) { i += num[0].length; return parseFloat(num[0]); }
+    const id = /^[A-Za-z_][A-Za-z0-9_]*/.exec(s.slice(i));
+    if (!id) fail('unexpected input');
+    i += id[0].length;
+    const name = id[0];
+    ws();
+    if (s[i] === '(') {                               // intrinsic: rad(180), max(a, b) …
+      i++;
+      const argv = [];
+      ws();
+      if (s[i] !== ')') for (;;) {
+        argv.push(expr());
+        ws();
+        if (s[i] === ',') { i++; continue; }
+        break;
+      }
+      ws();
+      if (s[i] !== ')') fail("missing ')'");
+      i++;
+      const f = CTRL_FUNCS[name.toLowerCase()];
+      if (!f) throw new Error(`unknown function '${name}' in "${whole}"`);
+      return f(argv);
+    }
+    let v = ctrlJsValue(name);
+    if (v === undefined) {
+      const k = { pi: Math.PI, m_pi: Math.PI, e: Math.E }[name.toLowerCase()];
+      if (k === undefined) throw new Error(`unknown control variable '${name}' in "${whole}"`);
+      v = k;
+    }
+    for (;;) {                                        // Tuple[i] / 'string'[i]
+      ws();
+      if (s[i] !== '[') break;
+      i++;
+      const k = expr();
+      ws();
+      if (s[i] !== ']') fail("missing ']'");
+      i++;
+      const idx = Math.round(asNum(k));
+      const len = isArr(v) ? v.length : hdevText(v).length;
+      if (!(idx >= 0 && idx < len)) {
+        throw new Error(`index ${idx} is outside '${name}' (${len} element(s)) in "${whole}"`);
+      }
+      v = isArr(v) ? v[idx] : hdevText(v)[idx];
+    }
+    return v;
+  }
+
+  function unary() {
+    ws();
+    if (s[i] === '-') { i++; return each1(unary(), x => -asNum(x)); }
+    if (s[i] === '+') { i++; return each1(unary(), asNum); }
+    const not = /^not\b/i.exec(s.slice(i));
+    if (not) { i += not[0].length; return each1(unary(), x => (truthy(x) ? 0 : 1)); }
+    return primary();
+  }
+
+  function mul() {
+    let v = unary();
+    for (;;) {
+      ws();
+      const op = s[i];
+      if (op !== '*' && op !== '/' && op !== '%') return v;
+      i++;
+      const b = unary();
+      v = each2(v, b, (x, y) => {
+        const a = asNum(x), c = asNum(y);
+        if (op === '*') return a * c;
+        if (op === '/') { if (c === 0) throw new Error(`division by zero in "${whole}"`); return a / c; }
+        if (c === 0) throw new Error(`modulo zero in "${whole}"`);
+        return a % c;
+      });
+    }
+  }
+
+  function add() {
+    let v = mul();
+    for (;;) {
+      ws();
+      if (s[i] !== '+' && s[i] !== '-') return v;
+      const op = s[i];
+      i++;
+      const b = mul();
+      v = op === '+' ? concat(v, b) : each2(v, b, (x, y) => asNum(x) - asNum(y));
+    }
+  }
+
+  /* '+' adds numbers and concatenates as soon as one side is a string */
+  function concat(a, b) {
+    if (isArr(a) || isArr(b)) return each2(a, b, concat);
+    if (typeof a === 'string' || typeof b === 'string') return hdevText(a) + hdevText(b);
+    return a + b;
+  }
+
+  function compare(a, b, kind) {
+    return each2(a, b, (x, y) => {
+      const bothNum = typeof x === 'number' && typeof y === 'number';
+      const xs = bothNum ? x : hdevText(x), ys = bothNum ? y : hdevText(y);
+      switch (kind) {
+        case '=':  return xs === ys ? 1 : 0;
+        case '#':  return xs !== ys ? 1 : 0;
+        case '<':  return xs < ys ? 1 : 0;
+        case '>':  return xs > ys ? 1 : 0;
+        case '<=': return xs <= ys ? 1 : 0;
+        default:   return xs >= ys ? 1 : 0;
+      }
+    });
+  }
+
+  function cmp() {
+    let v = add();
+    for (;;) {
+      ws();
+      let kind = null, len = 0;
+      for (const [txt, k] of [['<=', '<='], ['>=', '>='], ['==', '='], ['#', '#'], ['!=', '#'], ['=', '='], ['<', '<'], ['>', '>']]) {
+        if (s.startsWith(txt, i)) { kind = k; len = txt.length; break; }
+      }
+      if (!kind) return v;
+      i += len;
+      const b = add();
+      const prev = v;
+      v = compare(prev, b, kind);
+    }
+  }
+
+  function andExpr() {
+    let v = cmp();
+    for (;;) {
+      ws();
+      if (s.startsWith('&&', i)) { i += 2; }
+      else if (/^and\b/i.exec(s.slice(i))) { i += 3; }
+      else return v;
+      v = each2(v, cmp(), (x, y) => (truthy(x) && truthy(y)) ? 1 : 0);
+    }
+  }
+
+  function expr() {
+    let v = andExpr();
+    for (;;) {
+      ws();
+      if (s.startsWith('||', i)) { i += 2; }
+      else if (/^or\b/i.exec(s.slice(i))) { i += 2; }
+      else return v;
+      v = each2(v, andExpr(), (x, y) => (truthy(x) || truthy(y)) ? 1 : 0);
+    }
+  }
+
+  if (!whole) fail('empty expression');
+  const v = expr();
+  ws();
+  if (i < s.length) fail('unexpected input');
+  return v;
+}
+
+/* `Name := expression` — HALCON's assignment statement.  A '\' left over from a
+   joined continuation line (pixpum := \ [ … ]) is not part of the expression. */
+function parseAssignment(text) {
+  const m = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*([\s\S]+)$/.exec(String(text === null || text === undefined ? '' : text));
+  return m ? { name: m[1], expr: m[2].trim().replace(/^\\\s*/, '') } : null;
+}
+
+/* first word of a statement, lower case ('endfor', 'elseif', 'read_image').
+   A line that assigns to a variable named like a keyword — 'Repeat := 0' or
+   'for := 1' — has no statement word, it is an assignment. */
+const lineWord = t => {
+  const s = String(t).trim();
+  if (parseAssignment(s)) return '';
+  return (s.split(/[\s(]/, 1)[0] || '').toLowerCase();
+};
+
+/* Statement blocks of the structured statements.  A block is opened by one of
+   the OPEN_WORDS and closed by its END_WORDS counterpart; the branch words of
+   an if are found on the way through. */
+const OPEN_WORDS = { if: 'endif', for: 'endfor', while: 'endwhile', repeat: 'until', switch: 'endswitch', try: 'endtry' };
+const BRANCH_WORDS = new Set(['elseif', 'else']);
+const isOpenWord = w => Object.prototype.hasOwnProperty.call(OPEN_WORDS, w);
+
+/* 1-based line of the statement that closes the block opened at line `from`,
+   skipping nested blocks; `branches` stops the search at the first
+   else/elseif of this block instead.  null when the block is not closed. */
+function findBlockEdge(proc, from, branches) {
+  const L = linesOf(proc);
+  let depth = 0;
+  for (let n = from + 1; n <= L.length; n++) {
+    const t = L[n - 1];
+    if (!t || isComment(t)) continue;
+    const w = lineWord(t);
+    if (isOpenWord(w)) { depth++; continue; }
+    if (depth > 0) {
+      if (Object.values(OPEN_WORDS).includes(w)) depth--;
+      continue;
+    }
+    if (Object.values(OPEN_WORDS).includes(w)) return n;
+    if (branches && BRANCH_WORDS.has(w)) return n;
+  }
+  return null;
+}
+
 /* Why the processor cannot run a line: null = the line is fine (a comment, a
    blank line, a control-flow keyword such as `endif` — including the classic
    HDevelop spellings like `for Index := 0 to 5` that carry no parentheses — or
@@ -567,15 +1075,18 @@ const isComment  = t => /^\s*\*/.test(t);
 function lineProblem(text) {
   const t = String(text === null || text === undefined ? '' : text).trim();
   if (!t || isComment(t) || parseLine(t)) return null;
+  if (parseAssignment(t)) return null;                     // UpdateX := expression
   const word = t.split(/[\s(]/, 1)[0];
   const hasParen = t.indexOf('(') >= 0;
   if (HD_KEYWORDS.has(word) && !hasParen) return null;      // bare keyword / alternate syntax
+  if (isOpenWord(word) || /^(?:for|if)\b/i.test(word)) return null;
   const head = word.length > 24 ? `${word.slice(0, 24)}…` : word;
   return hasParen ? "no closing ')'"
                   : `'${head}' is not an operator call`;
 }
 
-const isExecutable = t => parseLine(t) !== null || lineProblem(t) !== null;
+const isExecutable = t => parseLine(t) !== null || parseAssignment(t) !== null ||
+  CONTROL_WORDS.has(lineWord(t)) || lineProblem(t) !== null;
 
 /* Character ranges of the arguments of a call line, in the same order
    parseLine() produces them — used to rewrite a single argument in place
@@ -865,47 +1376,61 @@ function imageSourceBar(parsed) {
   return `<div class="op-filebar"><span class="fb-label">Image file</span>` +
     `<select id="op-imgsrc" title="Image file that the ${esc(IMAGE_FILE_PARAM)} parameter refers to">` +
     `${opts.join('')}</select>` +
-    `<button class="op-btn" data-loadimg title="Read an image file from disk (PNG, JPG, BMP, GIF, TIFF, WebP)">` +
+    `<button class="op-btn" data-loadimg title="Read image files from disk (PNG, JPG, BMP, GIF, TIFF, WebP) — pick several at once to load a whole folder">` +
     `Load file…</button></div>`;
 }
 
-/* file picker -> read_image */
+/* file picker -> read_image.  Several files can be picked at once (Ctrl/Shift
+   click), which loads a whole folder of images: every file becomes an image
+   source, sorted by name, so a program's `list_image_files` and
+   `read_image (Image, ImageFiles[3])` find them like in HDevelop. */
 function openImageFile() {
   const input = document.createElement('input');
   input.type = 'file';
+  input.multiple = true;
   input.accept = 'image/*,.png,.jpg,.jpeg,.bmp,.gif,.webp,.tif,.tiff,.pgm,.ppm';
   input.style.display = 'none';
   document.body.appendChild(input);
-  input.addEventListener('change', () => {
-    const f = input.files && input.files[0];
+  input.addEventListener('change', async () => {
+    const files = Array.from(input.files || []);
     input.remove();
-    if (f) readImageFile(f);
+    if (!files.length) return;
+    const loaded = [];
+    for (const f of files) {
+      try { loaded.push(await readImageFile(f)); }
+      catch (e) { log(`Load file: '${f.name}' could not be decoded as an image.`, 'err'); }
+    }
+    if (loaded.length > 1) log(`${loaded.length} image files loaded: ${loaded.map(n => `'${n}'`).join(', ')}.`, 'msg');
+    if (loaded.length) setImageSource(loaded[0]);
   });
   input.click();
 }
 
-/* decode a picked file and keep it as an image source under its own name */
+/* decode a picked file and keep it as an image source under its own name;
+   resolves with the registered name */
 function readImageFile(file) {
-  const url = URL.createObjectURL(file);
-  const img = new Image();
-  img.onload = () => {
-    URL.revokeObjectURL(url);
-    const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
-    const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(w, h));
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(w * scale));
-    canvas.height = Math.max(1, Math.round(h * scale));
-    canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-    registerImageSource(file.name, canvas, false);
-    log(`Loaded image file '${file.name}' (${canvas.width}×${canvas.height}` +
-      (scale < 1 ? `, scaled down from ${w}×${h}` : '') + ').', 'msg');
-    setImageSource(file.name);
-  };
-  img.onerror = () => {
-    URL.revokeObjectURL(url);
-    log(`Load file: '${file.name}' could not be decoded as an image.`, 'err');
-  };
-  img.src = url;
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+      const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(w, h));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      registerImageSource(file.name, canvas, false);
+      log(`Loaded image file '${file.name}' (${canvas.width}×${canvas.height}` +
+        (scale < 1 ? `, scaled down from ${w}×${h}` : '') + ').', 'msg');
+      resolve(file.name);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error(`'${file.name}' cannot be decoded`));
+    };
+    img.src = url;
+  });
 }
 
 /* Point FileName of the read_image line at the cursor at `name` and read the
@@ -1795,6 +2320,31 @@ function waitOpenCV() {
   });
 }
 
+/* An iconic record is NOT owned by a single name: a procedure parameter
+   aliases the caller's variable (`find_center (Image, …)` binds the parameter
+   name to the same record) and the parameter name stays in the workspace, so
+   one record can be reachable under several names.  Replacing or overwriting
+   one of those names must therefore release the cv.Mat only when the LAST name
+   that refers to the record goes away — disposing it earlier leaves a deleted
+   Mat in the workspace and the next syncUI()/thumbnail would touch freed data
+   ("cannot call emscripten binding method Mat.rows getter on deleted object").
+   `exceptName` is the name that is being overwritten (it may still be listed
+   under the new record when this is called after the workspace was updated). */
+function releaseRecord(rec, exceptName) {
+  if (!rec || typeof rec.dispose !== 'function') return;
+  let shared = false;
+  state.iconic.forEach((r, n) => { if (r === rec && n !== exceptName) shared = true; });
+  if (!shared) rec.dispose();
+}
+
+/* put `rec` into the workspace under `name` (operator result, procedure
+   parameter, bound output) and release the object the name held before */
+function bindRecord(name, rec) {
+  const old = state.iconic.get(name);
+  state.iconic.set(name, rec);
+  if (old && old !== rec) releaseRecord(old, name);
+}
+
 function makeOpCtx() {
   const touched = [];                          // iconic results of this operator call
   return {
@@ -1809,9 +2359,7 @@ function makeOpCtx() {
       return rec;
     },
     defIconic(name, rec) {
-      const old = state.iconic.get(name);
-      if (old && old.dispose) old.dispose();       // free previous cv.Mat (e.g. grab loops)
-      state.iconic.set(name, rec);
+      bindRecord(name, rec);                       // frees the previous cv.Mat (e.g. grab loops)
       if (state.selectedVar === null) state.selectedVar = name;
       touched.push(name);
     },
@@ -1908,15 +2456,351 @@ function haltLine(proc, n, text, op, reason) {
   ok.onclick = () => { closeModal(); edFocusLine(n); };
 }
 
+/* ==========================================================================
+   STRUCTURED STATEMENTS and USER PROCEDURES
+   The program counter walks the executable lines of the current procedure;
+   for/while/if blocks and procedure calls move it explicitly through
+   state.nextPc.  state.loops holds the loop blocks that are currently open in
+   the running procedure, state.branches remembers which if a branch was
+   already taken in, state.frames is the stack of pending procedure calls.
+   ========================================================================== */
+const LOOP_LIMIT = 2000000;              // runaway guard: the browser stays usable
+
+function setCtrlNum(name, v) {
+  state.ctrl.set(name, { value: String(v), type: Number.isInteger(v) ? 'integer' : 'real' });
+  if (state.selectedCtrl === null) state.selectedCtrl = name;
+}
+
+/* Advance the program counter after line n of proc was executed. */
+function advancePc(proc, n) {
+  let nxt = state.nextPc === undefined ? nextExecutable(proc, n) : state.nextPc;
+  state.nextPc = undefined;
+  /* a procedure that runs off its last line returns to its caller */
+  while (nxt === null && state.frames.length) nxt = implicitReturn();
+  return nxt;
+}
+
+function implicitReturn() {
+  const fr = state.frames.pop();
+  bindOutputs(fr);
+  state.proc = fr.proc;
+  log(`End of procedure reached — returned from ${fr.name}.`);
+  return fr.next;
+}
+
+/* the output parameters of a call write into the caller's variables */
+function bindOutputs(fr) {
+  for (const o of fr.outputs) {
+    const ic = state.iconic.get(o.param);
+    if (ic) {
+      bindRecord(o.target, ic);                 // drop the previous object of the target
+      continue;
+    }
+    const c = state.ctrl.get(o.param);
+    if (c) state.ctrl.set(o.target, c);
+  }
+}
+
+/* the open loop block that starts at line n, or ends at line n, in proc */
+function loopStartAt(proc, n) {
+  for (let k = state.loops.length - 1; k >= 0; k--) {
+    const f = state.loops[k];
+    if (f.proc === proc && f.line === n) return f;
+  }
+  return null;
+}
+function loopEndingAt(proc, n) {
+  for (let k = state.loops.length - 1; k >= 0; k--) {
+    const f = state.loops[k];
+    if (f.proc === proc && f.end === n) return f;
+  }
+  return null;
+}
+function loopTop(proc) {
+  for (let k = state.loops.length - 1; k >= 0; k--) if (state.loops[k].proc === proc) return state.loops[k];
+  return null;
+}
+
+/* new loop block; null when the closing keyword is missing */
+function loopOpen(proc, n, kind) {
+  const end = findBlockEdge(proc, n, null);
+  return end === null ? null : { proc, line: n, end, kind, iters: 0 };
+}
+
+/* one more round of a loop: false = keep going, true = the guard tripped */
+function loopStep(f) {
+  if (++f.iters <= LOOP_LIMIT) return false;
+  haltLine(f.proc, f.line, lineText(f.proc, f.line), null,
+    `the ${f.kind} loop ran ${LOOP_LIMIT} times without finishing — execution stopped`);
+  return true;
+}
+
+/* for <variable> := <start> to <end> [by <step>] … endfor */
+function loopFor(proc, n) {
+  const text = lineText(proc, n);
+  let rest = text.replace(/^\s*for\s+/i, '');
+  let stepSrc = null;
+  const byM = /\s+by\s+(.+)$/i.exec(rest);
+  if (byM) { stepSrc = byM[1].trim(); rest = rest.slice(0, byM.index); }
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)\s*:=\s*([\s\S]+?)\s+to\s+([\s\S]+)$/i.exec(rest);
+  if (!m) {
+    haltLine(proc, n, text, null, "expected 'for <variable> := <start> to <end> [by <step>]'");
+    return false;
+  }
+  const name = m[1];
+  let f = loopStartAt(proc, n);
+  if (f && f.kind === 'for') {                       // back from endfor: next round
+    if (loopStep(f)) return false;
+    const next = f.value + f.step;
+    if (f.step > 0 ? next > f.to : next < f.to) {
+      state.loops.pop();
+      state.nextPc = f.end;                          // done: continue at endfor
+      return true;
+    }
+    f.value = next;
+  } else {
+    let from, to, step;
+    try {
+      from = asNum(parseCtrlExpr(m[2]));
+      to = asNum(parseCtrlExpr(m[3]));
+      step = stepSrc === null ? 1 : asNum(parseCtrlExpr(stepSrc));
+    } catch (err) {
+      haltLine(proc, n, text, null, err.message || String(err));
+      return false;
+    }
+    if (!step) { haltLine(proc, n, text, null, 'the loop step must not be 0'); return false; }
+    f = loopOpen(proc, n, 'for');
+    if (!f) { haltLine(proc, n, text, null, "the loop has no 'endfor'"); return false; }
+    if (step > 0 ? from > to : from < to) {              // empty range: no round at all
+      state.nextPc = f.end;
+      return true;
+    }
+    f.var = name; f.step = step; f.value = from; f.to = to;
+    state.loops.push(f);
+    log(`for ${name} := ${from} to ${to}${step === 1 ? '' : ` by ${step}`}.`);
+  }
+  setCtrlNum(name, f.value);
+  return true;
+}
+
+/* while (condition) … endwhile */
+function loopWhile(proc, n, condSrc) {
+  const text = lineText(proc, n);
+  let f = loopStartAt(proc, n);
+  if (!f || f.kind !== 'while') {
+    f = loopOpen(proc, n, 'while');
+    if (!f) { haltLine(proc, n, text, null, "the while loop has no 'endwhile'"); return false; }
+    state.loops.push(f);
+  } else if (loopStep(f)) return false;
+  let ok;
+  try {
+    ok = truthy(parseCtrlExpr(condSrc));
+  } catch (err) {
+    haltLine(proc, n, text, null, `condition: ${err.message || err}`);
+    return false;
+  }
+  log(`while: '${condSrc}' is ${ok ? 'true' : 'false'}.`);
+  if (!ok) { state.loops.pop(); state.nextPc = f.end; }
+  return true;
+}
+
+/* repeat … until (condition) */
+function loopRepeat(proc, n) {
+  const f = loopOpen(proc, n, 'repeat');
+  if (!f) { haltLine(proc, n, lineText(proc, n), null, "the repeat loop has no 'until'"); return false; }
+  state.loops.push(f);
+  return true;
+}
+
+function loopUntil(proc, n, condSrc) {
+  const f = loopEndingAt(proc, n);
+  if (!f) return true;
+  if (loopStep(f)) return false;
+  let ok;
+  try {
+    ok = truthy(parseCtrlExpr(condSrc));
+  } catch (err) {
+    haltLine(proc, n, lineText(proc, n), null, `condition: ${err.message || err}`);
+    return false;
+  }
+  if (ok) state.loops.pop(); else state.nextPc = f.line;
+  return true;
+}
+
+/* endfor / endwhile: back to the head of the loop, which decides the next round */
+function loopNext(proc, n) {
+  const f = loopEndingAt(proc, n);
+  if (!f) return true;
+  if (loopStep(f)) return false;
+  state.nextPc = f.line;
+  return true;
+}
+
+function loopBreak(proc, n) {
+  const f = loopTop(proc);
+  if (!f) { haltLine(proc, n, lineText(proc, n), null, "'break' outside of a loop"); return false; }
+  state.loops.pop();
+  state.nextPc = f.end;
+  return true;
+}
+
+function loopContinue(proc, n) {
+  const f = loopTop(proc);
+  if (!f) { haltLine(proc, n, lineText(proc, n), null, "'continue' outside of a loop"); return false; }
+  state.nextPc = f.end;
+  return true;
+}
+
+/* if (condition) … [elseif (condition) …] [else …] endif
+   Blocks are keyed by their endif line: as long as a branch of a block has been
+   taken, every later branch keyword of the same block jumps to its endif. */
+function runIf(proc, n, condSrc) {
+  const text = lineText(proc, n);
+  const endif = findBlockEdge(proc, n, null);
+  if (endif === null) { haltLine(proc, n, text, null, "the if statement has no 'endif'"); return false; }
+  const key = `${proc}:${endif}`;
+  if (state.branches.has(key)) { state.nextPc = endif; return true; }
+  let ok;
+  try {
+    ok = truthy(parseCtrlExpr(condSrc));
+  } catch (err) {
+    haltLine(proc, n, text, null, `condition: ${err.message || err}`);
+    return false;
+  }
+  log(`Condition '${condSrc}' is ${ok ? 'true' : 'false'}.`);
+  if (ok) { state.branches.set(key, true); return true; }
+  const edge = findBlockEdge(proc, n, true);
+  state.nextPc = edge === null ? endif : edge;
+  return true;
+}
+
+function branchElse(proc, n) {
+  const endif = findBlockEdge(proc, n, null);
+  if (endif === null) { haltLine(proc, n, lineText(proc, n), null, "the if statement has no 'endif'"); return false; }
+  const key = `${proc}:${endif}`;
+  if (state.branches.has(key)) { state.nextPc = endif; return true; }
+  state.branches.set(key, true);
+  return true;
+}
+
+/* statements the processor runs itself — the ones with an effect on the
+   program counter, everything else is a no-op */
+function runControlKeyword(proc, n, word, condSrc) {
+  switch (word) {
+    case 'for':      return loopFor(proc, n);
+    case 'endfor':
+    case 'endwhile': return loopNext(proc, n);
+    case 'while':    return loopWhile(proc, n, condSrc);
+    case 'repeat':   return loopRepeat(proc, n);
+    case 'until':    return loopUntil(proc, n, condSrc);
+    case 'if':
+    case 'elseif':   return runIf(proc, n, condSrc);
+    case 'else':     return branchElse(proc, n);
+    case 'endif':    state.branches.delete(`${proc}:${n}`); return true;
+    case 'break':    return loopBreak(proc, n);
+    case 'continue': return loopContinue(proc, n);
+    case 'return':   return procReturn(proc, n);
+    case 'stop':
+    case 'exit':     log('Program stopped (stop).'); return false;
+    default:         return true;                 // global, comment, assert, …
+  }
+}
+
+/* return from a procedure: the caller's variables receive the output
+   parameters, the program counter continues after the call */
+function procReturn(proc, n) {
+  const fr = state.frames.pop();
+  if (!fr) { log(`Returned from ${proc} — the program ends here.`); return false; }
+  bindOutputs(fr);
+  state.proc = fr.proc;
+  state.nextPc = fr.next;
+  log(`Returned from ${proc}.`);
+  return true;
+}
+
+/* User procedure call.  The interface of the procedure (its <interface> in a
+   .hdev file) binds the arguments: input parameters are copied into the
+   procedure, output parameters are written back into the caller's variables,
+   `_` discards an argument, exactly like in HDevelop. */
+function callProcedure(name, args, callerProc, callerLine) {
+  const P = PROCEDURES[name];
+  const params = Array.isArray(P.params) ? P.params : null;
+  const frame = { name, proc: callerProc, next: nextExecutable(callerProc, callerLine), outputs: [] };
+  if (!params) {
+    log(`${name}: the procedure declares no interface — its arguments are not bound.`, 'warn');
+  } else if (params.length !== args.length) {
+    haltLine(callerProc, callerLine, lineText(callerProc, callerLine), name,
+      `expects ${params.length} parameter(s) (${params.map(p => p.name).join(', ')}), got ${args.length}`);
+    return false;
+  } else {
+    for (let k = 0; k < params.length; k++) {
+      const param = params[k];
+      const arg = String(args[k] === undefined ? '' : args[k]).trim();
+      if (arg === '_' || arg === '') continue;            // HDevelop: "do not pass this one"
+      if (param.dir === 'out') { frame.outputs.push({ param: param.name, target: arg }); continue; }
+      const ic = state.iconic.get(arg);
+      if (ic) { bindRecord(param.name, ic); continue; }
+      const c = state.ctrl.get(arg);
+      if (c) { state.ctrl.set(param.name, c); continue; }
+      /* an input parameter may be given as a literal or an expression as well
+         ('f (Image, 128, Width/2, Out)') */
+      if (param.type === 'ctrl') {
+        try {
+          const v = parseCtrlExpr(arg);
+          state.ctrl.set(param.name, { value: ctrlText(v), type: ctrlType(v) });
+          continue;
+        } catch (err) { /* not an expression: report the missing variable below */ }
+      }
+      haltLine(callerProc, callerLine, lineText(callerProc, callerLine), name,
+        `input parameter '${param.name}' uses '${arg}', which is not defined`);
+      return false;
+    }
+  }
+  const first = firstExecutable(name);
+  if (first === null) {
+    haltLine(callerProc, callerLine, lineText(callerProc, callerLine), name, 'the procedure is empty');
+    return false;
+  }
+  state.frames.push(frame);
+  state.proc = name;
+  state.nextPc = first;
+  log(`Calling ${name} (${params ? params.map(p => p.name).join(', ') : `${args.length} argument(s)`}).`);
+  return true;
+}
+
 async function execute(proc, n) {        // execute line n of proc; false = stop
   const text = lineText(proc, n);
+
+  /* assignment: Name := expression */
+  const asg = parseAssignment(text);
+  if (asg) {
+    log(text.trim(), 'cmd');
+    try {
+      const v = parseCtrlExpr(asg.expr);
+      state.ctrl.set(asg.name, { value: ctrlText(v), type: ctrlType(v) });
+      if (state.selectedCtrl === null) state.selectedCtrl = asg.name;
+    } catch (err) {
+      haltLine(proc, n, text, null, err.message || String(err));
+      syncUI();
+      return false;
+    }
+    syncUI();
+    return true;
+  }
+
   const p = parseLine(text);
   if (!p) {
     const problem = lineProblem(text);
-    if (!problem) return true;                    // blank line, comment, bare keyword
-    haltLine(proc, n, text, null, problem);       // invalid line: report and stop
+    if (problem) {
+      haltLine(proc, n, text, null, problem);       // invalid line: report and stop
+      syncUI();
+      return false;
+    }
+    if (!String(text).trim() || isComment(text)) return true;   // blank line / comment
+    const condSrc = String(text).replace(/^\s*[A-Za-z_]+\s*/, '').replace(/^\(([\s\S]*)\)\s*$/, '$1');
+    const cont = runControlKeyword(proc, n, lineWord(text), condSrc);
     syncUI();
-    return false;
+    return cont;
   }
   log(text.trim(), 'cmd');
 
@@ -1932,29 +2816,24 @@ async function execute(proc, n) {        // execute line n of proc; false = stop
       haltLine(proc, n, text, p.op, err && err.message ? err.message : String(err));
       cont = false;
     }
+  } else if (p.op === 'if' || p.op === 'elseif') {
+    cont = runIf(proc, n, p.args[0]);
+  } else if (p.op === 'while') {
+    cont = loopWhile(proc, n, p.args[0]);
+  } else if (p.op === 'until') {
+    cont = loopUntil(proc, n, p.args[0]);
+  } else if (p.op === 'return') {
+    cont = procReturn(proc, n);
+  } else if (CONTROL_WORDS.has(p.op)) {
+    cont = runControlKeyword(proc, n, p.op);
+  } else if (PROCEDURES[p.op]) {
+    cont = callProcedure(p.op, p.args, proc, n);
   } else {
-    switch (p.op) {
-      case 'if': {
-        const num = state.ctrl.get('Number');
-        log(`Condition "${p.args[0]}" is ${num && num.value > 0 ? 'true' : 'false'}.`);
-        break;
-      }
-      case 'return':
-        log(`Returned from ${proc}.`);
-        break;
-      case 'stop':
-        cont = false;
-        break;
-      default:
-        /* HDevelop refuses to run an operator it does not know; this build
-           stops on it as well instead of skipping the line and going on. */
-        if (!HD_KEYWORDS.has(p.op)) {
-          state.unknownOps.add(p.op);
-          haltLine(proc, n, text, p.op, 'not implemented in this build');
-          cont = false;
-        }
-        break;
-    }
+    /* HDevelop refuses to run an operator it does not know; this build stops
+       on it as well instead of skipping the line and going on. */
+    state.unknownOps.add(p.op);
+    haltLine(proc, n, text, p.op, 'not implemented in this build');
+    cont = false;
   }
   syncUI();
   return cont;
@@ -1981,13 +2860,24 @@ function syncUI() {
    their index counters, the spawned graphics windows with their handle
    numbers, and the camera streams opened by open_framegrabber. */
 function clearRunState() {
-  state.iconic.forEach(rec => rec.dispose && rec.dispose());
+  /* procedure parameters alias the caller's variables (one record for both
+     names), so a record must be released exactly once */
+  const freed = new Set();
+  state.iconic.forEach(rec => {
+    if (!rec || freed.has(rec)) return;
+    freed.add(rec);
+    if (rec.dispose) rec.dispose();
+  });
   state.iconic.clear();
   state.ctrl.clear();
   state.selectedVar = null;
   state.selectedCtrl = null;
   state.unknownOps.clear();
   state.errorLine = null;                        // the red marker of the last failure
+  state.nextPc = undefined;                      // pending program-counter jump
+  state.loops.length = 0;                        // open for/while/repeat blocks
+  state.frames.length = 0;                       // pending procedure calls
+  state.branches.clear();                        // branches of the open if blocks
   if (typeof Metrology !== 'undefined') Metrology.disposeAll();
   if (typeof disposeGrabbers === 'function') disposeGrabbers();
   gfxCloseSpawned();                             // floating graphics windows
@@ -2021,12 +2911,12 @@ async function doRun() {
   state.running = true; state.stopRequested = false;
   setStatus('Running…', true);
   while (state.pc !== null && state.running && !state.stopRequested) {
-    const n = state.pc;
+    const cur = state.proc, n = state.pc;
     renderProgram();
-    const cont = await execute(state.proc, n);
+    const cont = await execute(cur, n);
     if (!cont) { state.pc = null; break; }
     if (state.stopRequested) break;
-    state.pc = nextExecutable(state.proc, n);
+    state.pc = advancePc(cur, n);
   }
   state.running = false;
   if (state.stopRequested) { log('Execution stopped by user.', 'warn'); setStatus('Stopped'); }
@@ -2044,10 +2934,10 @@ async function doStep() {
     syncUI();
     return;
   }
-  const n = state.pc;
+  const cur = state.proc, n = state.pc;
   setStatus(`Step: line ${n}`, true);
-  const cont = await execute(state.proc, n);
-  state.pc = cont ? nextExecutable(state.proc, n) : null;
+  const cont = await execute(cur, n);
+  state.pc = cont ? advancePc(cur, n) : null;
   setStatus(state.errorLine ? `Error at line ${state.errorLine.line}`
     : state.pc ? `Stopped at line ${state.pc}` : 'Ready');
   syncUI();
@@ -2060,10 +2950,10 @@ async function doRunToCursor() {
   state.running = true; state.stopRequested = false;
   setStatus('Running to cursor…', true);
   while (state.pc !== null && state.pc !== target && !state.stopRequested) {
-    const n = state.pc;
+    const cur = state.proc, n = state.pc;
     renderProgram();
-    if (!(await execute(state.proc, n))) break;
-    state.pc = nextExecutable(state.proc, n);
+    if (!(await execute(cur, n))) { state.pc = null; break; }
+    state.pc = advancePc(cur, n);
   }
   state.running = false;
   setStatus(state.errorLine ? `Error at line ${state.errorLine.line}`
@@ -2938,6 +3828,109 @@ function monacoApplyDecorations() {
   monacoDecorations = monacoEditor.deltaDecorations(monacoDecorations, dec);
 }
 
+/* Hover text for a variable: read from the same state the Variable Window
+   shows, so the tooltip always matches the values of the current run. */
+function variableHoverInfo(name) {
+  const cv = state.ctrl.get(name);
+  if (cv) {
+    return [
+      { value: `**${name}** · control \`${cv.type}\`` },
+      { value: '```text\n' + String(cv.value) + '\n```' },
+    ];
+  }
+  const rec = state.iconic.get(name);
+  if (rec) {
+    const out = [`**${name}** · iconic \`${rec.type || rec.kind || 'iconic'}\``];
+    if (rec.mat) out.push(`Size: ${rec.mat.cols}×${rec.mat.rows}`);
+    if (rec.count) out.push(`Objects: ${rec.count}`);
+    return [{ value: out.join('  \n') }];
+  }
+  const decl = declaredVars();          // declared by the program but not assigned yet
+  if (decl.ctrl.includes(name) || decl.iconic.includes(name)) {
+    return [{ value: `**${name}** · undefined\n\nDeclared, not assigned yet.` }];
+  }
+  return null;
+}
+
+/* ------------------- hover on an arithmetic expression -------------------
+   `Width*0.5`, `640/2`, `(Width + 1) * 2` … Hovering any character of such a
+   run — including the operator — lists the operands with their current value
+   and the computed result. */
+const EXPR_RE = /(?:[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|\([^()]*\))(?:\s*[+\-*/]\s*(?:[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|\([^()]*\)))+/g;
+
+/* true when offset i of `line` sits inside a '…' literal ('' is an escaped quote) */
+function inStringLiteral(line, i) {
+  let q = false;
+  for (let k = 0; k < i && k < line.length; k++) {
+    if (line[k] !== "'") continue;
+    if (q && line[k + 1] === "'") { k++; continue; }
+    q = !q;
+  }
+  return q;
+}
+
+/* the expression run covering 1-based `column`, or null */
+function expressionAt(line, column) {
+  if (/^\s*\*/.test(line)) return null;              // comment line
+  const i = column - 1;
+  if (i < 0 || inStringLiteral(line, i)) return null;
+  EXPR_RE.lastIndex = 0;
+  for (let m; (m = EXPR_RE.exec(line)); ) {
+    if (i >= m.index && i < m.index + m[0].length) return { text: m[0], start: m.index, end: m.index + m[0].length };
+  }
+  return null;
+}
+
+/* concise number text for the tooltip (640, 320.5, 0.0001 …) */
+function fmtNum(v) {
+  if (Number.isInteger(v)) return String(v);
+  return String(+v.toFixed(6));
+}
+
+/* Substitute the control variables of `expr` with their current value and try
+   to evaluate it. Returns the operand list and the result (null while an
+   operand is undefined, non-numeric, or the expression does not compute). */
+function evaluateExpr(expr) {
+  const TOKEN = /[A-Za-z_][A-Za-z0-9_]*|\d+(?:\.\d+)?|[+\-*/()]/g;
+  const operands = [];
+  let js = '', last = 0, known = true;
+  for (let m; (m = TOKEN.exec(expr)); ) {
+    js += expr.slice(last, m.index);
+    last = m.index + m[0].length;
+    const tok = m[0];
+    if (!/^[A-Za-z_]/.test(tok)) { js += tok; continue; }
+    const cv = state.ctrl.get(tok);
+    const num = cv ? Number(cv.value) : NaN;
+    if (cv && isFinite(num)) {
+      js += `(${num})`;
+      operands.push(`${tok} = ${cv.value}`);
+    } else {
+      js += 'NaN';
+      operands.push(cv ? `${tok} = ${cv.value} (not a number)` : `${tok} = undefined`);
+      known = false;
+    }
+  }
+  js += expr.slice(last);
+  let result = null;
+  if (known) {
+    try {
+      const v = Function('"use strict";return (' + js + ')')();
+      if (typeof v === 'number' && isFinite(v)) result = v;
+    } catch (e) { result = null; }
+  }
+  return { operands, result, js };
+}
+
+function expressionHoverInfo(expr) {
+  const { operands, result } = evaluateExpr(expr);
+  const md = [`\`${expr}\``];
+  if (operands.length) md.push(operands.join('  \n'));
+  md.push(result !== null
+    ? `**= ${fmtNum(result)}**`
+    : '_needs every operand to be defined_');
+  return [{ value: md.join('\n\n') }];
+}
+
 function setupMonaco(m) {
   m.languages.register({ id: 'halcon', extensions: ['.hdev', '.ovs'] });
   m.languages.setLanguageConfiguration('halcon', {
@@ -3049,6 +4042,28 @@ function setupMonaco(m) {
       return { suggestions: items };
     },
   });
+  /* hover a variable -> tooltip with its current value / type;
+     hover an arithmetic expression (also on its operator) -> operand values
+     and the computed result, e.g. `Width*0.5` */
+  m.languages.registerHoverProvider('halcon', {
+    provideHover: (model, position) => {
+      const expr = expressionAt(model.getLineContent(position.lineNumber), position.column);
+      if (expr) {
+        return {
+          range: new m.Range(position.lineNumber, expr.start + 1, position.lineNumber, expr.end + 1),
+          contents: expressionHoverInfo(expr.text),
+        };
+      }
+      const w = model.getWordAtPosition(position);
+      if (!w) return null;
+      const contents = variableHoverInfo(w.word);
+      if (!contents) return null;
+      return {
+        range: new m.Range(position.lineNumber, w.startColumn, position.lineNumber, w.endColumn),
+        contents,
+      };
+    },
+  });
   monacoRefreshDecorations();
 }
 
@@ -3118,11 +4133,92 @@ function serializeProgramFile() {
   };
 }
 
+/* ---------------- HDevelop XML (.hdev) ------------------------------------
+   A .hdev file written by HDevelop's export is an XML document: <hdevelop …>
+   containing one <procedure name="…"> per procedure, an <interface> declaring
+   its parameters and a <body> holding the program.  The program lines are <l>
+   elements, comment / blank lines are <c> elements, and the source is
+   XML-escaped (a '<' is written &lt;).  Only the text of those elements is the
+   program — the wrapper itself would otherwise be read as program lines. */
+function decodeXmlEntities(s) {
+  return String(s)
+    .replace(/&#x([0-9A-Fa-f]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+/* HALCON line continuation: a trailing '\' joins the next line — the tuple
+   literal of `pixpum := \ [ … ]` is one program line in HDevelop, while the XML
+   export keeps the physical editor lines.  Every '\' marker is dropped, so the
+   physical lines are concatenated into the single program line they mean. */
+function joinContinuations(lines) {
+  const out = [];
+  let joinable = false;                    // the line before ended in a '\'
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, '');
+    const continues = /\\+$/.test(line);
+    const frag = line.replace(/\\+$/, '');
+    if (joinable && out.length) out[out.length - 1] += frag;
+    else out.push(frag);
+    joinable = continues;
+  }
+  return out;
+}
+
+/* The <interface> of a procedure: its parameters in the order of the call —
+   iconic inputs, iconic outputs, control inputs, control outputs.  That is the
+   order HDevelop uses in the signature, so the arguments of a call are bound
+   positionally. */
+const IFACE_GROUPS = [['io', 'iconic', 'in'], ['oo', 'iconic', 'out'],
+                      ['ic', 'ctrl', 'in'], ['oc', 'ctrl', 'out']];
+
+function parseInterface(xml) {
+  const params = [];
+  for (const [tag, type, dir] of IFACE_GROUPS) {
+    const g = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i').exec(xml);
+    if (!g) continue;
+    const parRe = /<par\b[^>]*\bname="([^"]+)"[^>]*\/?>/gi;
+    let m;
+    while ((m = parRe.exec(g[1]))) params.push({ name: m[1], type, dir });
+  }
+  return params;
+}
+
+/* text of a .hdev XML document -> { procedure name: [line, …] }, every line
+   list carrying its `params` from the <interface> (empty for `main`) */
+function parseHdevelopXml(text) {
+  const procs = {};
+  const procRe = /<procedure\b[^>]*\bname="([^"]+)"[^>]*>([\s\S]*?)<\/procedure>/gi;
+  let pm;
+  while ((pm = procRe.exec(text))) {
+    const raw = [];
+    const elemRe = /<(l|c)>([\s\S]*?)<\/\1>/g;      // <l> program line, <c> comment / blank
+    let em;
+    while ((em = elemRe.exec(pm[2]))) {
+      for (const l of decodeXmlEntities(em[2]).split('\n')) {
+        const t = l.replace(/[ \t]+$/, '');
+        /* a <c> that is not already a '* comment' becomes one, so the text
+           survives the editor and the line checker */
+        if (em[1] === 'c' && t.trim() && !/^\s*\*/.test(t)) raw.push('* ' + t.trim());
+        else raw.push(t);
+      }
+    }
+    const lines = joinContinuations(raw);
+    lines.params = parseInterface(pm[2]);
+    procs[pm[1]] = lines;
+  }
+  return procs;
+}
+
 function parseProgram(text) {
   const trim = a => { const b = a.slice(); while (b.length && !b[b.length - 1].trim()) b.pop(); return b; };
   const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
   const procs = {};
-  if (lines.some(l => /^\s*\*\s*procedure\s*:/i.test(l))) {           // OpenCVS program format
+  if (/<hdevelop\b/i.test(text) || /<procedure\b[^>]*\bname=/i.test(text)) {   // HDevelop XML export
+    Object.assign(procs, parseHdevelopXml(text));
+  } else if (lines.some(l => /^\s*\*\s*procedure\s*:/i.test(l))) {    // OpenCVS program format
     let cur = null;
     for (const l of lines) {
       const m = l.match(/^\s*\*\s*procedure\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
@@ -3141,7 +4237,12 @@ function parseProgram(text) {
   } else {                                                            // bare operator list
     procs.main = lines.slice();
   }
-  for (const k of Object.keys(procs)) procs[k] = trim(procs[k]);
+  for (const k of Object.keys(procs)) {
+    const params = procs[k].params;                 // <interface> of a procedure
+    const t = trim(procs[k]);
+    if (params) t.params = params;
+    procs[k] = t;
+  }
   if (procs.main && !procs.main.length) delete procs.main;
   return procs;
 }
@@ -3171,7 +4272,7 @@ function loadProgram(text, fileName) {
     return false;
   }
   for (const k of Object.keys(PROCEDURES)) delete PROCEDURES[k];
-  for (const n of names) PROCEDURES[n] = { lines: procs[n] };
+  for (const n of names) PROCEDURES[n] = { lines: procs[n], params: procs[n].params };
   state.proc = names.includes('main') ? 'main' : names[0];
   state.progFile = fileName || state.progFile;
   resetProgramState();
@@ -3588,17 +4689,21 @@ $('#vw-clearall').addEventListener('click', clearAllVars);
 function clearVar(name) {
   const rec = state.iconic.get(name);
   if (!rec) return;
-  rec.dispose && rec.dispose();
-  state.iconic.delete(name);
+  /* a procedure parameter aliases the caller's variable (one record under two
+     names), so clearing one clears all of its names */
+  const names = [];
+  state.iconic.forEach((r, n) => { if (r === rec) names.push(n); });
+  names.forEach(n => state.iconic.delete(n));
+  if (rec.dispose) rec.dispose();
   GFX.wins.forEach(g => {
-    const had = g.base === name || g.items.some(it => it.name === name);
+    const had = names.includes(g.base) || g.items.some(it => names.includes(it.name));
     if (!had) return;
-    if (g.base === name) g.base = null;
-    g.items = g.items.filter(it => it.name !== name);
+    if (names.includes(g.base)) g.base = null;
+    g.items = g.items.filter(it => !names.includes(it.name));
     renderGraphics(g);
   });
-  if (state.selectedVar === name) state.selectedVar = null;
-  log(`Variable cleared: ${name}`, 'msg');
+  if (names.includes(state.selectedVar)) state.selectedVar = null;
+  log(`Variable cleared: ${names.join(', ')}`, 'msg');
   syncUI();
 }
 function clearAllVars() {
