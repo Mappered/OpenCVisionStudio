@@ -18,8 +18,13 @@
         <ul class="dropdown">
           <li data-cmd="new">New Program<span class="sc">Ctrl+N</span></li>
           <li data-cmd="open">Open Program&hellip;<span class="sc">Ctrl+O</span></li>
+          <li data-cmd="opensrv">Browse Server Folder&hellip;<span class="sc">url</span></li>
           <li data-cmd="save">Save Program<span class="sc">Ctrl+S</span></li>
           <li data-cmd="saveas">Save Program As&hellip;<span class="sc">Ctrl+Shift+S</span></li>
+          <li class="sep"></li>
+          <li data-cmd="loadimg">Load Image Files&hellip;<span class="sc">read_image</span></li>
+          <li data-cmd="loadfolder">Load Image Folder&hellip;<span class="sc">ImageFiles</span></li>
+          <li data-cmd="setdir">Set Working Folder&hellip;<span class="sc">./</span></li>
           <li class="sep"></li>
           <li data-cmd="quit">Exit<span class="sc">Alt+F4</span></li>
         </ul>
@@ -40,7 +45,7 @@
         <ul class="dropdown">
           <li data-cmd="run">Run<span class="sc">F5</span></li>
           <li data-cmd="runtocursor">Run to Cursor<span class="sc">Ctrl+F5</span></li>
-          <li data-cmd="step">Step<span class="sc">F6</span></li>
+          <li data-cmd="step">Step Into<span class="sc">F6</span></li>
           <li data-cmd="stepover">Step Over<span class="sc">F8</span></li>
           <li class="sep"></li>
           <li data-cmd="stop">Stop</li>
@@ -51,6 +56,7 @@
         <button class="menu-title">Visualization</button>
         <ul class="dropdown">
           <li class="check checked locked">Dark Mode</li>
+          <li class="check checked" id="menu-times" data-cmd="times">Execution Times</li>
           <li class="sep"></li>
           <li class="disabled">Iconic Variables: Medium</li>
           <li class="disabled">Graphics Window: Fit</li>
@@ -113,8 +119,8 @@
   <span class="tb-sep"></span>
   <button class="tb-btn accent" data-cmd="run" title="Run (F5)"><svg viewBox="0 0 16 16"><path d="M4 2l9 6-9 6z" fill="currentColor"/></svg></button>
   <button class="tb-btn" data-cmd="runtocursor" title="Run to cursor (Ctrl+F5)"><svg viewBox="0 0 16 16"><path d="M2 2v12M2 8h7" stroke="currentColor" fill="none"/><path d="M8 3l7 5-7 5z" fill="currentColor"/></svg></button>
-  <button class="tb-btn" data-cmd="step" title="Step (F6)"><svg viewBox="0 0 16 16"><path d="M3 1v9M3 10h8" stroke="currentColor" fill="none"/><path d="M8 7l5 5-5 5z" transform="translate(0 -3) scale(.9)" fill="currentColor"/></svg></button>
-  <button class="tb-btn" data-cmd="stepover" title="Step over (F8)"><svg viewBox="0 0 16 16"><path d="M2 2l6 6-6 6" stroke="currentColor" fill="none"/><path d="M9 2l6 6-6 6" stroke="currentColor" fill="none" opacity=".45"/></svg></button>
+  <button class="tb-btn" data-cmd="step" title="Step into a procedure call (F6)"><svg viewBox="0 0 16 16"><path d="M3 2v6h3" stroke="currentColor" fill="none"/><path d="M6 3l7 5-7 5z" fill="currentColor"/></svg></button>
+  <button class="tb-btn" data-cmd="stepover" title="Step over — run the call to its end (F8)"><svg viewBox="0 0 16 16"><path d="M2 2l6 6-6 6" stroke="currentColor" fill="none"/><path d="M9 2l6 6-6 6" stroke="currentColor" fill="none" opacity=".45"/></svg></button>
   <button class="tb-btn" data-cmd="stop" title="Stop"><svg viewBox="0 0 16 16"><rect x="3" y="3" width="10" height="10" fill="currentColor"/></svg></button>
   <button class="tb-btn" data-cmd="reset" title="Reset program (F2)"><svg viewBox="0 0 16 16"><path d="M8 2a6 6 0 1 1-5.6 3.8" fill="none" stroke="currentColor"/><path d="M2 1v5h5" fill="none" stroke="currentColor"/></svg></button>
 </div>
@@ -136,21 +142,9 @@
           <select id="proc-select"><option value="main">main</option><option value="detect_features">detect_features</option><option value="acquire_demo">acquire_demo</option><option value="metrology_demo">metrology_demo</option></select>
           <span id="proc-modified" title="Program was modified">*</span>
           <span class="grow"></span>
-          <label>Editor</label>
-          <select id="editor-kind" title="Program Window editor">
-            <option value="classic">Classic</option>
-            <option value="monaco" selected>VS Code (Monaco)</option>
-          </select>
         </div>
         <div class="code" id="program-code">
-          <div class="editor" id="editor-classic">
-            <div class="editor-gutter" id="editor-gutter"></div>
-            <div class="editor-main">
-              <pre id="editor-highlight" aria-hidden="true"></pre>
-              <textarea id="editor-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" wrap="off"></textarea>
-            </div>
-          </div>
-          <div id="editor-monaco" class="hidden"></div>
+          <div id="editor-monaco"></div>
         </div>
         <div class="pedit">
           <span id="pedit-mode" class="pedit-mode"></span>

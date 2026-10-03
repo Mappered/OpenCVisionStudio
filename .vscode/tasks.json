@@ -1,0 +1,42 @@
+{
+    // OpenCVisionStudio has no build step: the only "build" is serving the page.
+    // Node is bundled in the repo (tools/node), so nothing has to be on the PATH.
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "serve: OpenCVS dev server",
+            "detail": "Bundled Node runs tools/serve.js — http://localhost:8177 (folder listing via /api/list, program sync via /api/program and /events)",
+            "type": "shell",
+            "command": "${workspaceFolder}\\tools\\node\\node.exe",
+            "args": ["${workspaceFolder}\\tools\\serve.js"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "isBackground": true,
+            "instanceLimit": 1,
+            "instancePolicy": "terminateOldest",
+            "group": { "kind": "build", "isDefault": true },
+            "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "close": false },
+            "problemMatcher": {
+                "owner": "opencvs-serve",
+                // the server reports no diagnostics; the pattern is only there because a
+                // matcher needs one, the background block is what the debugger waits for
+                "pattern": [{ "regexp": "^opencvs-serve-has-no-problems$" }],
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "^OpenCVS dev server",
+                    "endsPattern": "^OpenCVS dev server:"
+                }
+            }
+        },
+        {
+            "label": "test: metrology",
+            "detail": "tools/test-metrology.js — the DOM-free half of the app (metrology + XLD operators), ~200 checks",
+            "type": "shell",
+            "command": "${workspaceFolder}\\tools\\node\\node.exe",
+            "args": ["${workspaceFolder}\\tools\\test-metrology.js"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "test",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+            "problemMatcher": []
+        }
+    ]
+}

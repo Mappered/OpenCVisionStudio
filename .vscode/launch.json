@@ -1,13 +1,48 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    // Press F5 to serve the page with the Node that is bundled in the repo
+    // (tools/node/node.exe), i.e. tools/serve.js on http://localhost:8177.
+    // The page must be served over HTTP: a file:// page cannot list a folder, so
+    // list_image_files ('./') would find nothing. Pick a configuration in the
+    // Run and Debug dropdown; F5 uses the first one.
     "version": "0.2.0",
     "configurations": [
         {
+            // Start the dev server and open the page in the default browser as soon
+            // as the server says it is ready (serverReadyAction watches the terminal).
+            "name": "Serve page (node tools/serve.js)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/tools/serve.js",
+            "cwd": "${workspaceFolder}",
+            // the repo ships Node — no global install, nothing on the PATH
+            "runtimeExecutable": "${workspaceFolder}/tools/node/node.exe",
+            "console": "integratedTerminal",
+            "internalConsoleOptions": "neverOpen",
+            "skipFiles": ["<node_internals>/**"],
+            "serverReadyAction": {
+                "pattern": "OpenCVS dev server:\\s+(https?://\\S+)",
+                "uriFormat": "%s",
+                "action": "openExternally"
+                // or: "action": "openIntegratedBrowser" to open it inside VS Code
+            }
+        },
+        {
+            // Same server, but the page itself runs under the debugger: breakpoints
+            // in js/app.js work. Run Task "serve: OpenCVS dev server" keeps the
+            // server, so the page stays reachable after this browser session stops.
+            "name": "Serve page + debug it in Edge",
             "type": "msedge",
             "request": "launch",
-            "name": "Open index.html",
+            "url": "http://localhost:8177/index.html",
+            "webRoot": "${workspaceFolder}",
+            "preLaunchTask": "serve: OpenCVS dev server"
+        },
+        {
+            // Kept for a quick look at the markup only. A file:// page cannot list
+            // a folder, so image loading and program fetching do not work here.
+            "name": "Open index.html (file:// - no server, limited)",
+            "type": "msedge",
+            "request": "launch",
             "file": "${workspaceFolder}/index.html"
         }
     ]

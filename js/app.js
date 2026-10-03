@@ -7,6 +7,10 @@
 const $  = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/* Time a history entry costs (log -> renderHistory rebuilds the window and
+   scrolls it: several milliseconds).  The execution times ask for the work a
+   line did, so they subtract it — see "execution times" further down. */
+let logCost = 0;
 /* operators that draw into a graphics window instead of computing a result:
    HALCON's dev_* settings/drawing operators and the disp_* primitives */
 const isDisplayOp = name => /^(dev_|disp_)/.test(String(name || ''));
@@ -495,10 +499,15 @@ const OPINFO = {
     params: [['ImageDirectory', 'input', 'control'],
              ['Extensions', 'input', 'control'], ['Options', 'input', 'control'],
              ['ImageFiles', 'output', 'control']],
-    desc: `Returns the image files read_image can read as a string tuple. In this
-           browser build that is the built-in demo image plus every file loaded
-           through the Operator Window of read_image; directory, extension and
-           options are accepted for compatibility.`,
+    desc: `Returns the image files that read_image can read as a string tuple,
+           sorted by name. <code>ImageDirectory</code> is read when the page is
+           served over HTTP (a local server lists a directory — use the
+           "Folder…" button or "Load folder…" for the folder of an opened
+           program, which a page cannot otherwise see) or after a folder has
+           been granted with the File System Access API. With no folder
+           available it falls back to the files loaded in the Operator Window.
+           <code>Extensions</code> selects which file types count,
+           <code>Options</code> is accepted for compatibility.`,
   },
   mean_image: {
     params: [['Image', 'input', 'iconic'], ['ImageMean', 'output', 'iconic'],
@@ -613,7 +622,16 @@ function opArgText(op) {
 const state = {
   proc: 'main',
   cursor: 1,          // selected line (1-based)
-  pc: null,           // program counter line (1-based) or null
+  /* The program counter: the line the program is suspended at AND the
+     procedure that line belongs to.  The Program Window can show a procedure
+     other than the one the program runs in — Alt+Enter browses into a call —
+     and a bare line number would then draw the green ▶ marker on whatever line
+     of the *shown* procedure happens to have that number.  The setter keeps the
+     owner in step, so no caller has to remember it. */
+  pcLine: null,
+  pcProc: null,
+  get pc() { return state.pcLine; },
+  set pc(v) { state.pcLine = v; state.pcProc = v === null ? null : state.proc; },
   running: false,
   stopRequested: false,
   breakpoints: new Set(),     // "proc:line"
@@ -626,12 +644,13 @@ const state = {
   histTab: 'history',
   selectedVar: null,
   selectedCtrl: null,
-  editorKind: 'monaco',       // 'classic' | 'monaco' (VS Code editor) — VS Code is the default
   watch: new Set(),           // watched variable names (persist across runs)
   plotVar: null,              // control variable shown in the plot panel
   updateWindow: true,         // dev_update_window: display operator results automatically
   unknownOps: new Set(),      // operators reported as not implemented (once per name)
   errorLine: null,            // { proc, line, text } of the line that stopped the run
+  times: new Map(),           // proc -> [{ text, ms }] per line: the last execution's times
+  showTimes: true,            // the gutter shows those times (Visualization ▸ Execution Times)
   progFile: 'program.odev',   // file name of the current program (Open/Save Program)
   /* control flow of the structured statements: the program counter normally
      advances to the next executable line, but for/while/endfor/if/endif and
@@ -1206,8 +1225,10 @@ function buildChipImage() {
 const now = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
 
 function log(text, kind) {
+  const t = performance.now();          // the entry is bookkeeping, not execution
   state.history.push({ t: now(), kind: kind || 'msg', text });
   renderHistory();
+  logCost += performance.now() - t;
 }
 
 /* ---------------- history window ---------------- */
@@ -1226,42 +1247,8 @@ function renderHistory() {
 }
 
 /* ---------------- program window ---------------- */
-function highlight(text) {
-  if (isComment(text)) return `<span class="tok-comment">${esc(text)}</span>`;
-  const re = /('[^']*')|(\b\d+(\.\d+)?\b)|(\b(if|elseif|else|endif|for|endfor|while|endwhile|try|catch|endtry|return|exit|stop)\b)|([A-Za-z_][A-Za-z0-9_]*)(?=\s*\()/g;
-  let out = '', last = 0, m;
-  while ((m = re.exec(text))) {
-    out += esc(text.slice(last, m.index));
-    if (m[1]) out += `<span class="tok-string">${esc(m[1])}</span>`;
-    else if (m[2]) out += `<span class="tok-number">${m[2]}</span>`;
-    else if (m[4]) out += `<span class="tok-kw">${m[4]}</span>`;
-    else if (m[6]) out += isDisplayOp(m[6])
-      ? `<span class="tok-dev">${esc(m[6])}</span>`
-      : `<span class="tok-op">${esc(m[6])}</span>`;
-    last = re.lastIndex;
-  }
-  out += esc(text.slice(last));
-  return out;
-}
-
 function renderProgram() {
-  if (state.editorKind === 'monaco') {         // Monaco holds the text; refresh decorations only
-    if (monacoEditor) monacoRefreshDecorations();
-    return;
-  }
-  const L = linesOf(state.proc);
-  $('#editor-gutter').innerHTML = L.map((_, i) => {
-    const n = i + 1, key = `${state.proc}:${n}`;
-    const e = state.errorLine;                    // marker of the line that stopped the run
-    const bad = !!e && e.proc === state.proc && e.line === n && L[i] === e.text;
-    return `<div class="gl ${state.cursor === n ? 'cursor' : ''} ${state.pc === n ? 'current' : ''}${bad ? ' error' : ''}" data-bp="${key}"` +
-      `${bad ? ' title="The processor stopped on this line"' : ''}>` +
-      (state.breakpoints.has(key) ? '<span class="bp-dot"></span>' : '') +
-      (state.pc === n ? '<span class="pc-arrow">&#9654;</span>' : '') +
-      (bad && state.pc !== n ? '<span class="err-mark">&#10006;</span>' : '') +
-      `${n}</div>`;
-  }).join('');
-  $('#editor-highlight').innerHTML = L.map(highlight).join('\n');
+  if (monacoEditor) monacoRefreshDecorations();   // Monaco holds the text; refresh decorations only
 }
 
 /* ---------------- operator window ---------------- */
@@ -1354,56 +1341,127 @@ function paintThumbs(root) {
 /* The Parameter that names an image file (read_image's FileName). Operators
    without such a parameter get no file controls in the Operator Window. */
 const IMAGE_FILE_PARAM = 'FileName';
+const IMAGE_DIR_PARAM = 'ImageDirectory';
 function imageFileParamIndex(op) {
   const info = OPINFO[op];
   return info ? info.params.findIndex(p => p[0] === IMAGE_FILE_PARAM) : -1;
 }
+function imageDirParamIndex(op) {
+  const info = OPINFO[op];
+  return info ? info.params.findIndex(p => p[0] === IMAGE_DIR_PARAM) : -1;
+}
 
-/* bar above the parameter list of an operator with a file parameter: every
-   image file available in this session (the built-in demo image plus the files
-   loaded from disk) and the button that picks a new one */
+/* bar above the parameter list of an operator that reads image files or an image
+   folder: which folder this program uses, the buttons that set it, and — for an
+   operator with a file parameter — the image files available in this session */
 function imageSourceBar(parsed) {
-  const idx = imageFileParamIndex(parsed.op);
-  if (idx < 0) return '';
-  const cur = imageArgName(parsed.args[idx]);
-  const known = IMAGE_SOURCES.get(cur);
-  const opts = [];
-  if (cur && !known) opts.push(`<option value="${esc(cur)}" selected>${esc(cur)} — not loaded</option>`);
-  for (const rec of IMAGE_SOURCES.values()) {
-    opts.push(`<option value="${esc(rec.name)}"${rec.name === cur ? ' selected' : ''}>` +
-      `${esc(rec.name)}${rec.builtin ? ' (demo)' : ` (${rec.w}×${rec.h})`}</option>`);
+  const fidx = imageFileParamIndex(parsed.op);
+  const didx = imageDirParamIndex(parsed.op);
+  if (fidx < 0 && didx < 0) return '';
+  let html = '';
+  if (fidx >= 0) {
+    const cur = imageArgName(parsed.args[fidx]);
+    const known = IMAGE_SOURCES.get(cur);
+    const opts = [];
+    if (cur && !known) opts.push(`<option value="${esc(cur)}" selected>${esc(cur)} — not loaded</option>`);
+    for (const rec of IMAGE_SOURCES.values()) {
+      opts.push(`<option value="${esc(rec.name)}"${rec.name === cur ? ' selected' : ''}>` +
+        `${esc(rec.name)}${rec.builtin ? ' (demo)' : ` (${rec.w}×${rec.h})`}</option>`);
+    }
+    html += `<span class="fb-label">Image file</span>` +
+      `<select id="op-imgsrc" title="Image file that the ${esc(IMAGE_FILE_PARAM)} parameter refers to">` +
+      `${opts.join('')}</select>`;
   }
-  return `<div class="op-filebar"><span class="fb-label">Image file</span>` +
-    `<select id="op-imgsrc" title="Image file that the ${esc(IMAGE_FILE_PARAM)} parameter refers to">` +
-    `${opts.join('')}</select>` +
-    `<button class="op-btn" data-loadimg title="Read image files from disk (PNG, JPG, BMP, GIF, TIFF, WebP) — pick several at once to load a whole folder">` +
-    `Load file…</button></div>`;
+  const dirShown = IMAGE_DIR ? IMAGE_DIR : (pageFolderListable
+    ? '(page folder — listed by the server)'
+    : '(page folder — not listable; use Server… or Folder…)');
+  html += `<span class="fb-label" title="Folder that list_image_files ('./') and read_image use">Folder</span>` +
+    `<span class="fb-label" data-dirshown>${esc(dirShown)}</span>` +
+    `<button class="op-btn" data-loadimg title="Read image files from disk (PNG, JPG, BMP, GIF, TIFF, WebP) — pick several at once. The folder of the picked files becomes the folder list_image_files ('./') reads">` +
+    `Load file…</button>` +
+    `<button class="op-btn" data-loadfolder title="Read every image of a folder (PNG, JPG, BMP, GIF, TIFF, WebP) — the folder becomes the folder that list_image_files ('./') reads">` +
+    `Load folder…</button>` +
+    `<button class="op-btn" data-setdir title="Grant the folder that holds the program's images: list_image_files ('./') lists it and read_image reads any single image of it">` +
+    `Folder…</button>` +
+    `<button class="op-btn" data-browse title="Browse a folder of the server (the project's dev server lists every folder, a granted folder needs no permission): open a program, or take a folder as the one list_image_files ('./') reads">` +
+    `Server…</button>`;
+  return `<div class="op-filebar">${html}</div>`;
 }
 
 /* file picker -> read_image.  Several files can be picked at once (Ctrl/Shift
-   click), which loads a whole folder of images: every file becomes an image
-   source, sorted by name, so a program's `list_image_files` and
-   `read_image (Image, ImageFiles[3])` find them like in HDevelop. */
+   click), which loads a set of images: every file becomes an image source, sorted
+   by name, so a program's `list_image_files` and `read_image (Image, ImageFiles[3])`
+   find them like in HDevelop. */
 function openImageFile() {
   const input = document.createElement('input');
   input.type = 'file';
   input.multiple = true;
-  input.accept = 'image/*,.png,.jpg,.jpeg,.bmp,.gif,.webp,.tif,.tiff,.pgm,.ppm';
+  input.accept = IMAGE_FILE_ACCEPT;
+  input.style.display = 'none';
+  document.body.appendChild(input);
+  input.addEventListener('change', async () => {
+    const files = Array.from(input.files || []);
+    input.remove();
+    await loadImageFiles(files, 'Load file');
+  });
+  input.click();
+}
+
+/* folder picker -> the whole folder.  A page cannot list a directory itself, but
+   `<input webkitdirectory>` asks the browser to hand over every file inside the
+   picked folder; the images among them are decoded here and registered under
+   their names, which is exactly what `list_image_files` then reports.  This is
+   what makes a program that does `list_image_files ('./', ...)` followed by
+   `read_image (Image, ImageFiles[3])` run against the real folder. */
+function openImageFolder() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.multiple = true;
+  input.webkitdirectory = true;
+  input.accept = IMAGE_FILE_ACCEPT;
   input.style.display = 'none';
   document.body.appendChild(input);
   input.addEventListener('change', async () => {
     const files = Array.from(input.files || []);
     input.remove();
     if (!files.length) return;
-    const loaded = [];
-    for (const f of files) {
-      try { loaded.push(await readImageFile(f)); }
-      catch (e) { log(`Load file: '${f.name}' could not be decoded as an image.`, 'err'); }
+    const images = files.filter(f => isImageFileName(f.name)).sort((a, b) => imageNameSort(a.name, b.name));
+    const skipped = files.length - images.length;
+    /* remember the folder, it becomes the folder relative file names of the
+       program resolve against (see imageDirUrl) */
+    const rel = (images[0] && images[0].webkitRelativePath) || '';
+    if (rel.includes('/')) IMAGE_DIR = rel.replace(/\/[^/]*$/, '/');
+    if (IMAGE_DIR) rememberProgDir(state.progFile, IMAGE_DIR);
+    if (!images.length) {
+      log(`Load folder: no image file in the picked folder (${files.length} file(s) there, ` +
+        `none with an image extension).`, 'warn');
+      return;
     }
-    if (loaded.length > 1) log(`${loaded.length} image files loaded: ${loaded.map(n => `'${n}'`).join(', ')}.`, 'msg');
-    if (loaded.length) setImageSource(loaded[0]);
+    log(`Load folder: ${images.length} image file(s) found` +
+      (skipped ? `, ${skipped} non-image file(s) skipped` : '') + '.', 'msg');
+    if (IMAGE_DIR) log(`Load folder: '${IMAGE_DIR}' is now the folder of list_image_files ('./').`, 'msg');
+    await loadImageFiles(images, 'Load folder');
   });
   input.click();
+}
+
+/* decode a picked set of files and keep every one that decodes as an image
+   source under its own name; the first one is shown in the editor's read_image
+   line so it turns up in the graphics window.  Returns the registered names. */
+async function loadImageFiles(files, what) {
+  if (!files || !files.length) return [];
+  const loaded = [], failed = [];
+  for (const f of files) {
+    try { loaded.push(await readImageFile(f)); }
+    catch (e) { failed.push(f.name); }
+  }
+  for (const n of failed) log(`${what}: '${n}' could not be decoded as an image.`, 'err');
+  if (loaded.length > 1) {
+    log(`${what}: ${loaded.length} image file(s) loaded — list_image_files now offers ` +
+      `${loaded.length} name(s), in sorted order.`, 'msg');
+  }
+  if (loaded.length) setImageSource(loaded[0]);
+  return loaded;
 }
 
 /* decode a picked file and keep it as an image source under its own name;
@@ -1414,15 +1472,17 @@ function readImageFile(file) {
     const img = new Image();
     img.onload = () => {
       URL.revokeObjectURL(url);
-      const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
-      const scale = Math.min(1, IMAGE_MAX_SIDE / Math.max(w, h));
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.round(w * scale));
-      canvas.height = Math.max(1, Math.round(h * scale));
-      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      registerImageSource(file.name, canvas, false);
-      log(`Loaded image file '${file.name}' (${canvas.width}×${canvas.height}` +
-        (scale < 1 ? `, scaled down from ${w}×${h}` : '') + ').', 'msg');
+      /* the picture is kept as an image source; the gray frame the operators
+         work on is built on the first read of it and then reused */
+      const rec = registerDecodedSource(file.name, img);
+      const { srcW: w, srcH: h, scaled } = rec;
+      log(`Loaded image file '${file.name}' (${rec.canvas.width}×${rec.canvas.height}` +
+        (scaled ? `, reduced from ${w}×${h}` : '') + ').', 'msg');
+      if (scaled) {
+        log(`Loaded image file '${file.name}': ${w}×${h} exceeds ${IMAGE_MAX_SIDE} px, so it was ` +
+          `reduced to ${rec.canvas.width}×${rec.canvas.height} — distances measured on it are scaled by ` +
+          `${(w / rec.canvas.width).toFixed(4)}.`, 'warn');
+      }
       resolve(file.name);
     };
     img.onerror = () => {
@@ -1441,8 +1501,8 @@ function setImageSource(name) {
   const parsed = parseLine(text);
   const idx = parsed ? imageFileParamIndex(parsed.op) : -1;
   if (idx < 0) {
-    log(`Load file: line ${n} is not a read_image — '${name}' is kept for the next ` +
-        `read_image call.`, 'warn');
+    log(`Image source: line ${n} is not a read_image — '${name}' is kept for the next ` +
+        `read_image call (use list_image_files to get the loaded names).`, 'msg');
     renderOperator();
     return;
   }
@@ -1469,9 +1529,257 @@ async function readImageLine(n) {
   paintThumbs();
 }
 
+/* ---------------- the folder a program reads from ---------------- */
+/* A page cannot see the path of a file picked with <input type=file>, so a
+   program opened from disk cannot learn its own folder.  Granting the folder
+   once covers it for the rest of the session, and the granted/loaded folder is
+   remembered per program name so later runs need no extra click. */
+const PROGDIR_KEY = 'opencvs.progdir.v1';
+
+function progDirMap() {
+  try { return JSON.parse(localStorage.getItem(PROGDIR_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+function rememberProgDir(prog, dir) {
+  if (!prog || dir == null) return;                       // '' is a folder, too
+  const map = progDirMap();
+  map[prog.toLowerCase()] = dir;
+  const keys = Object.keys(map);
+  while (keys.length > 24) delete map[keys.shift()];      // keep it small
+  try { localStorage.setItem(PROGDIR_KEY, JSON.stringify(map)); } catch (e) { /* full or blocked */ }
+}
+/* the remembered folder, or null when this program has none: '' is the page's
+   own folder, which must not be confused with "nothing remembered" */
+function recallProgDir(prog) {
+  if (!prog) return null;
+  const map = progDirMap();
+  const key = prog.toLowerCase();
+  return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+}
+
+/* "Folder…": grant the folder that holds the program and its images, with the
+   File System Access API.  Nothing is decoded here — list_image_files enumerates
+   the granted folder and read_image decodes only the images the program asks
+   for.  The browser cannot tell a page the folder of a program that was opened
+   from disk, so granting the folder once is what makes
+   `list_image_files ('./', 'default', [], ImageFiles)` list the real folder. */
+async function setWorkingFolder() {
+  if (typeof window.showDirectoryPicker !== 'function') {
+    log('Folder: this browser cannot open a folder directly — use "Load folder…", ' +
+      'which also sets the folder of list_image_files (\'./\').', 'warn');
+    return;
+  }
+  let dir;
+  try { dir = await window.showDirectoryPicker({ mode: 'read', id: 'ovs-images' }); }
+  catch (e) { return; }                                  // the user cancelled
+  IMAGE_DIR_HANDLE = dir;
+  IMAGE_DIR = dir.name + '/';
+  IMAGE_URLS.clear();
+  rememberProgDir(state.progFile, IMAGE_DIR);
+  log(`Folder: '${IMAGE_DIR}' is now the folder that list_image_files ('./') lists and ` +
+    `read_image reads from` + (state.progFile ? ` (remembered for '${state.progFile}').` : '.'), 'msg');
+  renderOperator();
+}
+
+/* ---------------- Browse Server Folder: the folder browser ---------------- */
+/* A program opened by path is fetched, so its own folder is known and becomes the
+   folder of `list_image_files ('./')` with no folder grant at all.  The dialog
+   walks the server's folder tree (see listFolderEntries): the project's own dev
+   server lists every folder, a plain static server lists the ones that have no
+   index.html in them. */
+const PROGRAM_FILE_RE = /\.(odev|hdev|ovs)$/i;
+const upDir = here => {
+  const p = here.replace(/\/+$/, '');
+  const i = p.lastIndexOf('/');
+  return i < 0 ? '' : p.slice(0, i);
+};
+const joinPath = (dir, name) => (dir ? dir.replace(/\/+$/, '') + '/' : '') + name;
+
+function openProgramFromServer() { return showServerBrowser(''); }
+
+/* Is the page's own folder listable?  The project's dev server lists it (see
+   listFolderEntries); a plain static server cannot, because it answers with
+   index.html instead of an index.  Probed once, for the label of the folder bar */
+let pageFolderListable = null;
+async function probePageFolder() {
+  if (!appBaseUrl()) { pageFolderListable = false; return; }
+  const before = pageFolderListable;
+  try { pageFolderListable = !!(await listFolderEntries('')); } catch (e) { pageFolderListable = false; }
+  if (pageFolderListable !== before) renderOperator();
+}
+
+/* Folders of this server that listed successfully before, newest first.  The
+   dialog offers them when the folder asked for cannot be listed, so a static
+   server is not a dead end.  Kept per origin: the same folder may list on the
+   dev server and not on a static one */
+const SRCDIR_KEY = 'opencvs.srcdir.v1';
+function recentDirs() {
+  try { return JSON.parse(localStorage.getItem(SRCDIR_KEY + '@' + location.origin)) || []; }
+  catch (e) { return []; }
+}
+function rememberDir(rel) {
+  const v = String(rel == null ? '' : rel).replace(/\/+$/, '');
+  const list = recentDirs().filter(d => d !== v);
+  list.unshift(v);
+  while (list.length > 12) list.pop();
+  try { localStorage.setItem(SRCDIR_KEY + '@' + location.origin, JSON.stringify(list)); }
+  catch (e) { /* full or blocked */ }
+}
+
+/* Does the server the page came from still answer at all?  Tells "this folder is
+   not listable" apart from "the server is gone" */
+async function serverReachable() {
+  try {
+    await fetch(new URL('index.html', appBaseUrl()).href, { method: 'HEAD', cache: 'no-store' });
+    return true;
+  } catch (e) { return false; }
+}
+
+/* the dialog itself: current folder, its folders/programs, and a path box */
+async function showServerBrowser(here, note = '', isErr = false) {
+  if (!/^https?:/.test(location.protocol)) {
+    log('Browse Server Folder: the page has to be served over HTTP — a file:// page cannot ' +
+      'fetch a program or list a folder. Serve it (py -m http.server 8123) and reload.', 'warn');
+    return;
+  }
+  const entries = await listFolderEntries(here);
+  if (entries) rememberDir(here);
+  const listing = entries
+    ? `${entries.files.length} file(s)` +
+      (entries.via === 'api' ? ' — listed by the dev server' : ' — from the folder index')
+    : '';
+  let body = `<p class="dim" style="margin-top:0">Folder <code>/${esc(here)}</code>` +
+    (listing ? ` &mdash; ${listing}` : '') + `</p>` +
+    (note ? `<div class="${isErr ? 'errline' : 'dim'}">${note}</div>` : '');
+  const row = (label, attrs, dim) =>
+    `<div ${attrs} style="padding:3px 8px;cursor:pointer${dim ? ';color:var(--text-dim)' : ''}">` +
+    `${esc(label)}</div>`;
+  let rows = '', others = 0;
+  if (entries) {
+    const dirs = entries.dirs.slice().sort(imageNameSort);
+    const progs = entries.files.filter(f => PROGRAM_FILE_RE.test(f)).sort(imageNameSort);
+    others = entries.files.length - progs.length;
+    if (here) rows += row('../', 'data-dir=".."', true);
+    for (const d of dirs) rows += row(d, `data-dir="${esc(d)}"`);
+    for (const f of progs) rows += row(f, `data-prog="${esc(f)}"`);
+    if (!rows) rows = `<div class="empty-note">no folder and no program (*.odev, *.hdev, *.ovs) here</div>`;
+  } else {
+    /* not listable: say which of the two reasons it is, and offer a way on */
+    body += await serverReachable()
+      ? `<div class="errline">This server does not list <code>/${esc(here)}</code>: a plain ` +
+        `static server answers a folder that holds <code>index.html</code> with the page itself, ` +
+        `instead of an index. Serve the project with its own dev server ` +
+        `(<code>node tools/serve.js</code>, port 8177) to browse the whole tree, or type a folder ` +
+        `below, e.g. <code>example</code>, or a program, e.g. <code>example/MAIN.hdev</code>.</div>`
+      : `<div class="errline">Nothing answers at <code>${esc(location.origin)}</code> any more — ` +
+        `is the server still running? Start it again (<code>node tools/serve.js</code>, or ` +
+        `<code>py -m http.server 8123</code>) and reopen this dialog.</div>`;
+    const known = [];
+    /* IMAGE_DIR keeps its trailing slash for building names; the browser works in
+       slash-less relative folders, so normalise before comparing or they'd both show */
+    for (const cand of [...recentDirs(), IMAGE_DIR, recallProgDir(state.progFile)]) {
+      if (cand == null) continue;
+      const d = String(cand).replace(/\/+$/, '');
+      if (known.includes(d) || d === here.replace(/\/+$/, '')) continue;
+      if (d === '' && pageFolderListable === false) continue;      // would not list here either
+      known.push(d);
+    }
+    if (known.length) rows += `<div class="dim" style="padding:3px 8px">folders that listed:</div>`;
+    for (const d of known) rows += row(d || '(the page folder)', `data-jump="${esc(d)}"`);
+    if (here) rows += row('../', 'data-dir=".."', true);
+    if (!rows) rows = `<div class="empty-note">nothing to browse — type a path below</div>`;
+  }
+  body += `<div style="max-height:250px;overflow:auto;border:1px solid var(--border-soft);` +
+    `font-family:var(--font-mono);font-size:12px">${rows}</div>`;
+  if (others > 0) {
+    body += `<p class="dim" style="margin:6px 0 0">${others} other file(s) here are not shown.</p>`;
+  }
+  body += `<p style="margin:10px 0 0"><span class="dim">Path</span> ` +
+    `<input id="srv-path" value="${esc(here)}" spellcheck="false" ` +
+    `placeholder="folder or program path" ` +
+    `style="width:300px;font-family:var(--font-mono)"> ` +
+    `<button class="btn" id="srv-open" style="min-width:0;padding:3px 12px">Open</button>` +
+    (entries ? ` <button class="btn" id="srv-usedir" style="min-width:0;padding:3px 12px" ` +
+      `title="Make this the folder list_image_files ('./') reads">Use as image folder</button>` : '') +
+    `</p>`;
+  showModal('Browse Server Folder', body);
+  const modal = document.querySelector('#modal-overlay .modal');
+  if (modal) modal.style.width = '620px';
+  $('#modal-ok').textContent = 'Close';
+
+  /* a folder name walks into it, a program name opens it, a known folder jumps */
+  $$('#modal-body [data-dir]').forEach(el => el.addEventListener('click', () => {
+    const d = el.dataset.dir;
+    showServerBrowser(d === '..' ? upDir(here) : joinPath(here, d.replace(/\/+$/, '')));
+  }));
+  $$('#modal-body [data-jump]').forEach(el => el.addEventListener('click', () => {
+    showServerBrowser(el.dataset.jump);
+  }));
+  $$('#modal-body [data-prog]').forEach(el => el.addEventListener('click', () => {
+    openProgramAtPath(joinPath(here, el.dataset.prog));
+  }));
+  const typed = () => $('#srv-path').value.trim().replace(/^\/+/, '').replace(/\/+$/, '');
+  /* Open always answers: a folder is walked into, a program is fetched, and a
+     path that changes nothing says so instead of redrawing the same view */
+  $('#srv-open').addEventListener('click', () => {
+    const p = typed();
+    if (PROGRAM_FILE_RE.test(p)) { openProgramAtPath(p); return; }
+    if (p === here.replace(/\/+$/, '')) {
+      showServerBrowser(here, `Already showing <code>/${esc(here)}</code> — ` +
+        (entries ? 'pick a folder or a program above.' : 'type another folder, e.g. <code>example</code>.'));
+      return;
+    }
+    showServerBrowser(p);
+  });
+  const useDir = $('#srv-usedir');
+  if (useDir) useDir.addEventListener('click', async () => {
+    IMAGE_DIR = here ? here + '/' : '';
+    IMAGE_DIR_HANDLE = null;
+    IMAGE_URLS.clear();
+    rememberProgDir(state.progFile, IMAGE_DIR);
+    renderOperator();
+    const found = await enumImagesAtDir('./', IMAGE_FILE_RE);
+    closeModal();
+    log(`Working folder: '${IMAGE_DIR || '(the page folder)'}' taken from the server — ` +
+      `${found ? found.length : 0} image file(s) there. It is remembered for ` +
+      `'${state.progFile}'.`, found && found.length ? 'msg' : 'warn');
+  });
+  $('#srv-path').addEventListener('keydown', e => { if (e.key === 'Enter') $('#srv-open').click(); });
+}
+
+/* fetch one program of the server and open it; its folder becomes the working
+   folder of list_image_files ('./') */
+async function openProgramAtPath(rel) {
+  const clean = String(rel).replace(/^\/+/, '').replace(/\\/g, '/');
+  try {
+    const url = new URL(clean.split('/').map(encodeURIComponent).join('/'), appBaseUrl());
+    const r = await fetch(url.href, { cache: 'no-store' });
+    if (!r.ok) throw new Error(`HTTP ${r.status} ${r.statusText}`);
+    const text = await r.text();
+    const name = decodeURIComponent(url.href.slice(url.href.lastIndexOf('/') + 1)) || 'program.odev';
+    const dir = clean.includes('/') ? clean.slice(0, clean.lastIndexOf('/') + 1) : '';
+    if (!loadProgram(text, name, dir)) {
+      showServerBrowser(dir.replace(/\/$/, ''), `'${esc(name)}' contains no program text.`, true);
+      return;
+    }
+    rememberProgDir(name, dir);
+    rememberDir(dir);
+    closeModal();
+    log(`Open Program: '${clean}' fetched from the server — its folder ` +
+      `'${dir || '(the page folder)'}' is the working folder of list_image_files ('./').`, 'msg');
+  } catch (e) {
+    const msg = `'${esc(clean)}' could not be read (${e.message}).`;
+    log(`Open Program: '${clean}' could not be read (${e.message}).`, 'err');
+    showServerBrowser(clean.includes('/') ? clean.slice(0, clean.lastIndexOf('/')) : '', msg, true);
+  }
+}
+
 /* both controls live in the Operator Window body, which is re-rendered often */
 $('#operator-body').addEventListener('click', e => {
   if (e.target.closest('[data-loadimg]')) openImageFile();
+  if (e.target.closest('[data-loadfolder]')) openImageFolder();
+  if (e.target.closest('[data-setdir]')) setWorkingFolder();
+  if (e.target.closest('[data-browse]')) openProgramFromServer();
 });
 $('#operator-body').addEventListener('change', e => {
   if (e.target.id === 'op-imgsrc') setImageSource(e.target.value);
@@ -1498,8 +1806,60 @@ function declaredVars(proc = state.proc) {
 }
 const unionOrder = (declared, defined) => [...declared, ...defined.filter(k => !declared.includes(k))];
 
+/* A region thumbnail is sampled straight from the region's pixels.  Drawing
+   its baked overlay instead paints all 19.5 M pixels of the frame (130 ms) only
+   to shrink the result to 80×60 — and the variable list is redrawn after every
+   step, so that was the largest single cost of a loop with sub-procedures.  The
+   colours and the transparency are the ones of the baked overlay
+   (regionDefColor over black, DEV_OVERLAY_ALPHA below). */
 function paintIconic(rec, x, w, h) {
-  if (rec && rec.canvas) x.drawImage(rec.canvas, 0, 0, w, h);
+  if (!rec) return;
+  if (rec.canvas) { x.drawImage(rec.canvas, 0, 0, w, h); return; }
+  const W = rec.mat ? rec.mat.cols : rec.w;
+  const H = rec.mat ? rec.mat.rows : rec.h;
+  if (!W || !H) return;
+  /* An image whose display canvas has not been built yet (a mean_image result
+     that only feeds another operator) is sampled as gray values — the region
+     branch below would read its pixels as a mask and fill the whole thumbnail. */
+  if (rec.kind === 'image') {
+    const g = rec.mat ? rec.mat.data : rec.gray;
+    if (!g) return;
+    if (rec.mat && rec.mat.channels && rec.mat.channels() !== 1) {
+      const c = recCanvas(rec);                      // colour source: bake it
+      if (c) x.drawImage(c, 0, 0, w, h);
+      return;
+    }
+    const id = x.createImageData(w, h), d = id.data;
+    for (let y = 0; y < h; y++) {
+      const sy = Math.min(H - 1, ((y + 0.5) * H / h) | 0) * W;
+      for (let k = 0; k < w; k++) {
+        const v = g[sy + Math.min(W - 1, ((k + 0.5) * W / w) | 0)] || 0;
+        const q = (y * w + k) * 4;
+        d[q] = d[q + 1] = d[q + 2] = v; d[q + 3] = 255;
+      }
+    }
+    x.putImageData(id, 0, 0);
+    return;
+  }
+  const mask = rec.mat ? rec.mat.data : null;
+  const labels = mask ? null : rec.labels;
+  if (!mask && !labels) return;
+  if (!mask && rec.ids && !rec._idsSet) rec._idsSet = new Set(rec.ids);
+  const alpha = mask ? 150 : 165;                   // the alpha of the baked overlay
+  const id = x.createImageData(w, h), d = id.data;
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(H - 1, ((y + 0.5) * H / h) | 0) * W;
+    for (let k = 0; k < w; k++) {
+      const si = sy + Math.min(W - 1, ((k + 0.5) * W / w) | 0);
+      const lab = labels ? labels[si] : 1;
+      if (mask ? !mask[si] : (!lab || (rec._idsSet && !rec._idsSet.has(lab)))) continue;
+      const col = regionDefColor(rec, lab);
+      const q = (y * w + k) * 4;
+      d[q] = col[0] * alpha / 255; d[q + 1] = col[1] * alpha / 255; d[q + 2] = col[2] * alpha / 255;
+      d[q + 3] = 255;
+    }
+  }
+  x.putImageData(id, 0, 0);
 }
 
 function renderVariables() {
@@ -1622,6 +1982,21 @@ function regionDefColor(rec, label) {
   return hslToRgb((label * 47) % 360, 75, 55);
 }
 
+/* The display canvas of a region result is built on first use, not when the
+   operator returns: painting 19.5 M pixels costs ~130 ms, and a program that
+   runs with dev_update_off () - or that uses a result only to measure it -
+   never shows it.  Every consumer of the pixels goes through here, so a
+   result is still displayed exactly as before. */
+function recCanvas(rec) {
+  if (!rec) return null;
+  if (!rec.canvas && typeof rec.canvasFor === 'function') {
+    const build = rec.canvasFor;
+    rec.canvasFor = null;
+    rec.canvas = build();
+  }
+  return rec.canvas || null;
+}
+
 /* Repaint a region record with the window's display parameters (dev_set_color /
    dev_set_colored / dev_set_draw('margin') / dev_set_line_width).  Returns null
    when the baked canvas already matches, i.e. the common case of no explicit
@@ -1693,7 +2068,8 @@ function paintObject(g2, rec, p, G) {
   if (rec.kind === 'xld') { paintXld(g2, rec, p, G); return; }
   const pc = regionParamCanvas(rec, p);
   if (pc) { g2.drawImage(pc, 0, 0); return; }
-  if (rec.canvas) g2.drawImage(rec.canvas, 0, 0);
+  const c = recCanvas(rec);
+  if (c) g2.drawImage(c, 0, 0);
 }
 
 /* disp_message (Row / Column / ColorName / Box, CoordSystem 'window'|'image') */
@@ -1801,10 +2177,11 @@ function gfxResetPart(G) {
 function gfxShowImage(G, name) {          // display of a full image -> clears the history
   const rec = state.iconic.get(name);
   const prev = G.base && state.iconic.get(G.base);
+  const c = recCanvas(rec);               // a lazy canvas is built now: it is shown
+  const pcv = recCanvas(prev);
   G.base = name;
   G.items.length = 0;
-  if (rec && rec.canvas && (!prev || !prev.canvas ||
-      prev.canvas.width !== rec.canvas.width || prev.canvas.height !== rec.canvas.height)) gfxResetPart(G);
+  if (c && (!pcv || pcv.width !== c.width || pcv.height !== c.height)) gfxResetPart(G);
   renderGraphics(G);
   updateStatusSize(G);
 }
@@ -1837,9 +2214,7 @@ function gfxSetParams(G, patch) {
 }
 /* dev_set_part: fit the rectangle of the image into the window */
 function gfxSetPart(G, r1, c1, r2, c2) {
-  const rec = G.base && state.iconic.get(G.base);
-  const W = (rec && rec.canvas && rec.canvas.width) || IMG_W;
-  const H = (rec && rec.canvas && rec.canvas.height) || IMG_H;
+  const { W, H } = gfxImageSize(G);       // the frame that is shown (rec.mat wins)
   const cols = Math.max(1, G.canvas.width), rows = Math.max(1, G.canvas.height);
   let y0 = Math.max(0, r1), x0 = Math.max(0, c1), y1 = r2, x1 = c2;
   if (!(y1 > y0) || y1 < 0) y1 = H - 1;   // Row1 > Row2 / negative: reset that dimension
@@ -1942,13 +2317,26 @@ function refreshActiveLamps() {
 const fitChecked = G => { const f = $('.fit-check', G.el); return !!(f && f.checked); };
 function setFitChecked(G, v) { const f = $('.fit-check', G.el); if (f) f.checked = v; }
 
+/* The size of the image a window shows.  It is the frame that was read — 5088×3840
+   for the example program's photos, not the 640×480 demo chip — so 'Fit' and the
+   gray probe must ask the base image, not the workspace default: fitting a large
+   photo with the demo size picks a scale ~8× too large, which shows a magnified
+   corner instead of the whole image. */
+function gfxImageSize(G) {
+  const rec = G.base && state.iconic.get(G.base);
+  if (rec && rec.mat) return { W: rec.mat.cols, H: rec.mat.rows };
+  if (rec && rec.canvas) return { W: rec.canvas.width, H: rec.canvas.height };
+  return { W: IMG_W, H: IMG_H };
+}
+
 function fitView(G) {
   const r = G.wrap.getBoundingClientRect();
   if (r.width < 20 || r.height < 20) return;
-  const s = Math.min(r.width / IMG_W, r.height / IMG_H) * 0.98;
+  const { W, H } = gfxImageSize(G);              // the image that is actually shown
+  const s = Math.min(r.width / W, r.height / H) * 0.98;
   G.view.scale = s;
-  G.view.ox = (r.width - IMG_W * s) / 2;
-  G.view.oy = (r.height - IMG_H * s) / 2;
+  G.view.ox = (r.width - W * s) / 2;
+  G.view.oy = (r.height - H * s) / 2;
   updateZoomLabel(G);
 }
 function updateZoomLabel(G) {
@@ -1974,7 +2362,9 @@ function updateStatusSize(G) {
   const el = $('.gstatus-size', G.el);
   if (!el) return;
   const rec = G.base && state.iconic.get(G.base);
-  el.textContent = (rec && rec.canvas) ? `${rec.canvas.width} × ${rec.canvas.height}` : '—';
+  const cv = rec && rec.canvas, mt = rec && rec.mat;
+  el.textContent = cv ? `${cv.width} × ${cv.height}`
+    : (mt ? `${mt.cols} × ${mt.rows}` : '—');
 }
 
 function renderGraphics(G = gfxActive()) {
@@ -1987,7 +2377,8 @@ function renderGraphics(G = gfxActive()) {
   g2.save();
   g2.setTransform(G.view.scale, 0, 0, G.view.scale, G.view.ox, G.view.oy);
   const baseRec = G.base && state.iconic.get(G.base);
-  if (baseRec && baseRec.canvas) g2.drawImage(baseRec.canvas, 0, 0);
+  const baseCv = baseRec && recCanvas(baseRec);
+  if (baseCv) g2.drawImage(baseCv, 0, 0);
   /* window history: regions / XLD / disp_* primitives on top of the image, in
      the order they were displayed, each with the display parameters of its call */
   for (const it of G.items) {
@@ -2034,8 +2425,10 @@ function currentImage(G) {
 }
 function grayAt(G, x, y) {
   const rec = currentImage(G);
-  if (!rec || x < 0 || y < 0 || x >= IMG_W || y >= IMG_H) return null;
-  return rec.gray[((y | 0) * IMG_W) + (x | 0)];
+  if (!rec) return null;
+  const { W, H } = gfxImageSize(G);          // the stride rec.gray was built with
+  if (x < 0 || y < 0 || x >= W || y >= H) return null;
+  return rec.gray[((y | 0) * W) + (x | 0)];
 }
 
 function zoomAt(G, cx, cy, f) {
@@ -2480,8 +2873,43 @@ function advancePc(proc, n) {
   return nxt;
 }
 
+/* Keep the Program Window on the procedure the program counter is in.  A call
+   enters a procedure (and its return leaves it) without the window noticing, so
+   the editor went on showing the caller's text while state.pc was a line number
+   of the callee: the arrow of the counter was drawn on whatever lines of the
+   *caller* had that number, and a step into 'find_center' looked like line 1 of
+   'main' starting over.
+   The running line is followed even while the window already shows the current
+   procedure, so a step to a line below the visible area scrolls it into view
+   instead of leaving the marker off screen.  Focus is not taken: the shortcuts
+   are handled on the document (see the keyboard section), and a long F5 run must
+   not pull the focus away from whatever window the user is working in. */
+function showRunningProcedure() {
+  const sel = $('#proc-select');
+  if (sel && sel.value !== state.proc) {           // a call/return changed procedure
+    sel.value = state.proc;
+    const sp = $('#status-proc');
+    if (sp) sp.textContent = `Procedure: ${state.proc}`;
+    editorLoad();                                  // the callee's own text
+  }
+  if (state.pc !== null) edFocusLine(state.pc, false);   // caret on the running line
+}
+
+/* Alt+Enter and the Procedure box let the Program Window browse a procedure
+   other than the one the counter is suspended in.  Continuing must run the line
+   the counter sits on — not a same-numbered line of whatever procedure is on
+   screen — so every "continue" returns the window to the counter's procedure
+   first.  Returns true when it had to move. */
+function backToCounterProcedure() {
+  if (state.pc === null || state.pcProc === state.proc) return false;
+  if (!state.pcProc || !PROCEDURES[state.pcProc]) return false;
+  state.proc = state.pcProc;
+  return true;
+}
+
 function implicitReturn() {
   const fr = state.frames.pop();
+  addCallTime(fr);
   bindOutputs(fr);
   state.proc = fr.proc;
   log(`End of procedure reached — returned from ${fr.name}.`);
@@ -2711,6 +3139,7 @@ function runControlKeyword(proc, n, word, condSrc) {
 function procReturn(proc, n) {
   const fr = state.frames.pop();
   if (!fr) { log(`Returned from ${proc} — the program ends here.`); return false; }
+  addCallTime(fr);                       // the call line carries the whole call
   bindOutputs(fr);
   state.proc = fr.proc;
   state.nextPc = fr.next;
@@ -2725,7 +3154,8 @@ function procReturn(proc, n) {
 function callProcedure(name, args, callerProc, callerLine) {
   const P = PROCEDURES[name];
   const params = Array.isArray(P.params) ? P.params : null;
-  const frame = { name, proc: callerProc, next: nextExecutable(callerProc, callerLine), outputs: [] };
+  const frame = { name, proc: callerProc, line: callerLine, tAcc: timeSum,
+                  next: nextExecutable(callerProc, callerLine), outputs: [] };
   if (!params) {
     log(`${name}: the procedure declares no interface — its arguments are not bound.`, 'warn');
   } else if (params.length !== args.length) {
@@ -2768,13 +3198,192 @@ function callProcedure(name, args, callerProc, callerLine) {
   return true;
 }
 
+/* ---------------- execution times (the gutter shows them, like HDevelop) ---------
+   Every executed line collects the wall time it spent on the OpenCV work — not
+   the UI refresh that follows the line, which is far more expensive than e.g.
+   `count_obj` and would report a 0.1 ms operator as a 20 ms line.  The times add
+   up over the whole run, so a line inside a loop shows the total of its
+   iterations, which is what makes a profile readable — but it is also easy to
+   take that total for one execution (a loop body's 1.43 s is 8 × 179 ms, and
+   the line then looks eight times slower than it is), so a total that covers
+   more than one execution is marked `×n`.
+   They describe the *last* execution: a fresh run starts from an empty table,
+   and a line whose text has changed since it ran keeps no time (the statement
+   moved).  A procedure call is one line for the interpreter — the callee runs
+   inside it — so the call line in the caller carries the whole call, while the
+   lines of the callee carry their own times.
+   The time of a line is the cost of the statement.  With dev_update_on () the
+   automatic display of the result happens inside the same step, and painting a
+   19.5 M pixel frame costs more than most operators do (the RGBA canvas of a
+   region is ~50 ms, that of an image ~45 ms) — charging that to the operator
+   would report a `dyn_threshold` that computes in 32 ms as a 90 ms line.  The
+   display time is therefore recorded separately and shown as a dim `+58d`
+   behind the time (see fmtDisp below). */
+const TIMES_W = 64;                    // width of the time column (px)
+const TIMES_W_WIDE = 84;               // …and while a line shows its execution count
+const TIMES_W_WIDEST = 116;            // …and while it shows the display time it paid
+let monacoTimesWidth = 10;             // current lineDecorationsWidth of the VS Code editor
+let monacoTimesHost = null;            // the layer the times are drawn into
+let timeSum = 0;                       // operator time recorded so far, for the call lines
+let dispSum = 0;                       // display time recorded so far, for the run summary
+let logBase = 0;                       // logCost when the current line started
+
+/* A line is timed from just after its history entry to just before the window
+   refresh that follows it; the entries the line itself writes (a call's
+   "Calling …") are subtracted as well.  Both are bookkeeping: a single history
+   entry costs several milliseconds here and would report a 0.05 ms operator as
+   an 8 ms line. */
+function timeStart() {
+  logBase = logCost;
+  return performance.now();
+}
+function timeEnd(t0) {
+  return Math.max(0, performance.now() - t0 - (logCost - logBase));
+}
+
+function clearTimes() {
+  state.times.clear();
+  timeSum = 0;
+  dispSum = 0;
+  setTimesColumn(false);
+}
+
+/* the time of line n, only when that line still holds the statement that ran */
+function lineTime(proc, n) {
+  const arr = state.times.get(proc);
+  const t = arr && arr[n - 1];
+  return t && t.text === lineText(proc, n) ? t.ms : null;
+}
+
+/* the display time line n paid on top of its own time (0 when it displays
+   nothing, which is every line of a program run with dev_update_off ()) */
+function lineDisp(proc, n) {
+  const arr = state.times.get(proc);
+  const t = arr && arr[n - 1];
+  return t && t.text === lineText(proc, n) ? (t.d || 0) : 0;
+}
+
+/* How many executions the time of line n covers (0 = the line did not run):
+   a loop body or a procedure called several times adds its iterations up. */
+function lineCount(proc, n) {
+  const arr = state.times.get(proc);
+  const t = arr && arr[n - 1];
+  return t && t.text === lineText(proc, n) ? (t.n || 1) : 0;
+}
+
+function addLineTime(proc, n, ms, count = true, disp = 0) {
+  const text = lineText(proc, n);
+  let arr = state.times.get(proc);
+  if (!arr) { arr = []; state.times.set(proc, arr); }
+  const t = arr[n - 1];
+  /* `count` is false for the time a returning call hands to its call line:
+     that is the same execution's second record, not a new one — counting it
+     would mark every `find_center (…)` call line with a false `×2`.
+     `disp` is the display the line caused, kept apart from `ms` (see the note
+     above the times column) and accumulated too, so the two suffixes match. */
+  arr[n - 1] = (t && t.text === text)
+    ? { text, ms: t.ms + ms, n: (t.n || 1) + (count ? 1 : 0), d: (t.d || 0) + disp }
+    : { text, ms, n: count ? 1 : 0, d: disp };
+  timeSum += ms;
+  dispSum += disp;
+}
+
+/* A returning call hands its call line what its lines recorded while the frame
+   was open — exactly their sum, nested calls included.  Reading the clock
+   instead would count the history entry and the window refresh that each of
+   those lines caused, which the lines themselves do not report. */
+function addCallTime(fr) {
+  if (fr && fr.tAcc !== undefined) addLineTime(fr.proc, fr.line, timeSum - fr.tAcc, false);
+}
+
+function fmtTime(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(2) + ' s';
+  if (ms >= 100) return Math.round(ms) + ' ms';
+  if (ms >= 10) return ms.toFixed(1) + ' ms';
+  if (ms < 0.05) return '<0.1 ms';         // the clock itself only resolves 0.1 ms
+  return ms.toFixed(2) + ' ms';
+}
+
+/* the display time of a line as the dim marker the gutter shows: `+58d` is
+   'here 58 ms of the line were the graphics window, not the operator', and a
+   run that paints more than 10 s of them says `+12.3 sd` */
+function fmtDisp(ms) {
+  return ms >= 10000 ? `+${(ms / 1000).toFixed(1)}sd` : `+${Math.round(ms)}d`;
+}
+
+function linesWithTimes() {
+  const L = linesOf(state.proc);
+  return L.some((_, i) => lineTime(state.proc, i + 1) !== null);
+}
+
+/* The column lives in the band between the line numbers and the code — Monaco's
+   "line decorations" gutter, free here because this build has no folding.  The
+   band is widened only while there is something to show, so the code does not
+   move for a program that never ran. */
+function setTimesColumn(on, wide = 0) {
+  /* wide: 0 = plain time, 1 = the line also shows its execution count,
+     2 = it also shows the display time it paid */
+  const w = !on ? 10 : wide >= 2 ? TIMES_W_WIDEST : wide === 1 ? TIMES_W_WIDE : TIMES_W;
+  if (w === monacoTimesWidth) return;
+  monacoTimesWidth = w;
+  if (monacoEditor) monacoEditor.updateOptions({ lineDecorationsWidth: w });
+}
+
+function monacoRenderTimes() {
+  if (!monacoEditor) return;
+  const show = state.showTimes && linesWithTimes();
+  const L0 = linesOf(state.proc);
+  const hasDisp = show && L0.some((_, i) => lineDisp(state.proc, i + 1) >= 1);
+  const hasCount = show && L0.some((_, i) => lineCount(state.proc, i + 1) > 1);
+  setTimesColumn(show, hasDisp ? 2 : hasCount ? 1 : 0);
+  if (!monacoTimesHost) {
+    monacoTimesHost = document.createElement('div');
+    monacoTimesHost.id = 'editor-times';
+    $('#editor-monaco').appendChild(monacoTimesHost);
+  }
+  if (!show) {
+    if (monacoTimesHost.firstChild) monacoTimesHost.textContent = '';
+    return;
+  }
+  const L = linesOf(state.proc);
+  const li = monacoEditor.getLayoutInfo();
+  const x = (li.glyphMarginLeft || 0) + li.glyphMarginWidth + li.lineNumbersWidth;
+  const w = Math.max(0, li.contentLeft - x);
+  const lh = monacoEditor.getOption(monaco.editor.EditorOption.lineHeight);
+  const top = monacoEditor.getScrollTop();       // the layer does not scroll itself
+  let html = '';
+  for (let i = 0; i < L.length; i++) {
+    const ms = lineTime(state.proc, i + 1);
+    if (ms === null) continue;
+    const n = lineCount(state.proc, i + 1);
+    const d = lineDisp(state.proc, i + 1);
+    const y = monacoEditor.getTopForLineNumber(i + 1) - top;
+    const cnt = n > 1 ? `<span class="ltime-n">×${n}</span>` : '';
+    const dsp = d >= 1 ? `<span class="ltime-d">${fmtDisp(d)}</span>` : '';
+    const tip = `operator${n > 1 ? ` × ${n}` : ''}: ${fmtTime(ms)}` +
+      (d >= 0.05 ? `, display: ${fmtTime(d)} (dev_update_on ())` : '');
+    html += `<div class="ltime" title="${tip}" style="top:${y}px;left:${x}px;width:${w}px;` +
+      `height:${lh}px;line-height:${lh}px">${fmtTime(ms)}${cnt}${dsp}</div>`;
+  }
+  monacoTimesHost.innerHTML = html;
+}
+
+function setShowTimes(on) {              // Visualization ▸ Execution Times
+  state.showTimes = !!on;
+  $('#menu-times')?.classList.toggle('checked', state.showTimes);
+  renderProgram();
+  scheduleSave();
+}
+
 async function execute(proc, n) {        // execute line n of proc; false = stop
+  let t0 = timeStart();
   const text = lineText(proc, n);
 
   /* assignment: Name := expression */
   const asg = parseAssignment(text);
   if (asg) {
     log(text.trim(), 'cmd');
+    t0 = timeStart();
     try {
       const v = parseCtrlExpr(asg.expr);
       state.ctrl.set(asg.name, { value: ctrlText(v), type: ctrlType(v) });
@@ -2784,7 +3393,9 @@ async function execute(proc, n) {        // execute line n of proc; false = stop
       syncUI();
       return false;
     }
+    const dt = timeEnd(t0);
     syncUI();
+    addLineTime(proc, n, dt);
     return true;
   }
 
@@ -2799,19 +3410,29 @@ async function execute(proc, n) {        // execute line n of proc; false = stop
     if (!String(text).trim() || isComment(text)) return true;   // blank line / comment
     const condSrc = String(text).replace(/^\s*[A-Za-z_]+\s*/, '').replace(/^\(([\s\S]*)\)\s*$/, '$1');
     const cont = runControlKeyword(proc, n, lineWord(text), condSrc);
+    const dt = timeEnd(t0);
     syncUI();
+    addLineTime(proc, n, dt);
     return cont;
   }
   log(text.trim(), 'cmd');
+  t0 = timeStart();
 
   let cont = true;
+  let disp = 0;                        // the display this line pays for (see addLineTime)
   const impl = OP_IMPLS[p.op];
   if (impl) {
     if (!opencvReady && !(await waitOpenCV())) return false;
     const ctx = makeOpCtx();
     try {
       await impl(p.args, ctx);
-      if (state.updateWindow) ctx.autoDisplayResults();   // dev_update_window ('on')
+      if (state.updateWindow) {                          // dev_update_window ('on')
+        /* Timed apart from the operator: painting the result is window work,
+           and on a 19.5 M pixel frame it is the larger half of the line. */
+        const d0 = performance.now();
+        ctx.autoDisplayResults();
+        disp = performance.now() - d0;
+      }
     } catch (err) {
       haltLine(proc, n, text, p.op, err && err.message ? err.message : String(err));
       cont = false;
@@ -2835,7 +3456,9 @@ async function execute(proc, n) {        // execute line n of proc; false = stop
     haltLine(proc, n, text, p.op, 'not implemented in this build');
     cont = false;
   }
+  const dt = timeEnd(t0);
   syncUI();
+  addLineTime(proc, n, Math.max(0, dt - disp), true, disp);
   return cont;
 }
 
@@ -2890,12 +3513,33 @@ function clearRunState() {
   mainGfx.drag = null;
 }
 
+/* the procedure a new execution starts in */
+function entryProcName() { return PROCEDURES.main ? 'main' : Object.keys(PROCEDURES)[0]; }
+
+/* A fresh execution always begins in the entry procedure.  A run that ended — or
+   failed — inside a procedure leaves the counter there, and that procedure's
+   input images are gone once the variables are cleared, so restarting where the
+   last run stopped ran 'find_center' on a missing image.  The program window
+   follows back to the entry procedure as well. */
+function startNewRun() {
+  const entry = entryProcName();
+  if (entry) state.proc = entry;
+  clearRunState();
+  clearTimes();                          // the times describe the execution that starts here
+  state.pc = firstExecutable(state.proc);
+  showRunningProcedure();
+}
+
 function doReset() {
   state.running = false;
   state.stopRequested = false;
   setLive(false);
+  prefetchCancel();                        // stop decoding images ahead of the program
   clearRunState();
   state.pc = null;
+  const entry = entryProcName();               // reset goes back to the top
+  if (entry) state.proc = entry;
+  showRunningProcedure();
   syncUI();
   renderGraphics(mainGfx);
   log('Program reset.');
@@ -2903,11 +3547,9 @@ function doReset() {
 }
 
 async function doRun() {
-  if (state.running) return;
-  if (state.pc === null) {
-    clearRunState();
-    state.pc = firstExecutable(state.proc);
-  }
+  if (state.running || state.stepping) return;
+  if (state.pc === null) startNewRun();
+  else if (backToCounterProcedure()) showRunningProcedure();   // the window was browsing
   state.running = true; state.stopRequested = false;
   setStatus('Running…', true);
   while (state.pc !== null && state.running && !state.stopRequested) {
@@ -2917,8 +3559,18 @@ async function doRun() {
     if (!cont) { state.pc = null; break; }
     if (state.stopRequested) break;
     state.pc = advancePc(cur, n);
+    showRunningProcedure();
   }
   state.running = false;
+  /* A program that runs with dev_update_on () pays for the graphics window in
+     every line whose result is displayed.  The gutter shows the statements
+     without it, so the sum no longer meets the clock — say what the difference
+     is and how to get rid of it. */
+  if (dispSum >= 50) {
+    log(`Display: ${fmtTime(dispSum)} of the run went into the graphics window ` +
+      `(dev_update_on ()).  The times in the gutter are the statements alone, ` +
+      `and dev_update_off () skips this work.`, 'msg');
+  }
   if (state.stopRequested) { log('Execution stopped by user.', 'warn'); setStatus('Stopped'); }
   else if (state.errorLine) { log(`Program aborted at line ${state.errorLine.line}.`, 'err'); setStatus(`Error at line ${state.errorLine.line}`); }
   else { log('Program stopped (stop).', 'msg'); setStatus('Ready'); }
@@ -2926,27 +3578,55 @@ async function doRun() {
   syncUI();
 }
 
-async function doStep() {
-  if (state.running) return;
-  if (state.pc === null) {
-    clearRunState();
-    state.pc = firstExecutable(state.proc);
+/* F6 (mode 'into') executes one line and follows a procedure call into the
+   procedure; F8 (mode 'over') executes the whole call and stops on the next line
+   of the caller, so a call line counts as a single step.  Both end with the
+   program window showing the procedure the counter is in, and the status bar
+   names it — "Stopped at main, line 6" is never ambiguous. */
+async function doStep(mode = 'into') {
+  /* One step at a time.  A held-down F6/F8 repeats the key while the previous
+     step is still executing; two steps aimed at the same line execute it twice
+     and corrupt the counter (a call frame entered twice, or an operator reading
+     a variable the other step already released), so extra presses are ignored.
+     The same flag keeps F5 out of a step in progress. */
+  if (state.running || state.stepping) return;
+  state.stepping = true;
+  try { await stepOnce(mode); }
+  finally { state.stepping = false; }
+}
+
+async function stepOnce(mode) {
+  if (state.pc === null) {                     // first step of a sequence
+    startNewRun();
     syncUI();
     return;
   }
+  if (backToCounterProcedure()) showRunningProcedure();   // stepped a line of another procedure: back to the counter
   const cur = state.proc, n = state.pc;
-  setStatus(`Step: line ${n}`, true);
-  const cont = await execute(cur, n);
+  const depth = state.frames.length;          // pending calls before this line
+  setStatus(`${mode === 'over' ? 'Step over' : 'Step'}: ${cur}, line ${n}`, true);
+  let cont = await execute(cur, n);
   state.pc = cont ? advancePc(cur, n) : null;
-  setStatus(state.errorLine ? `Error at line ${state.errorLine.line}`
-    : state.pc ? `Stopped at line ${state.pc}` : 'Ready');
+  /* stepping over a call: run on without redrawing until the call's frame is
+     gone (a return pops it) and the counter is back with its caller */
+  while (cont && mode === 'over' && state.pc !== null && state.frames.length > depth) {
+    const c2 = state.proc, n2 = state.pc;
+    cont = await execute(c2, n2);
+    state.pc = cont ? advancePc(c2, n2) : null;
+  }
+  showRunningProcedure();
+  setStatus(state.errorLine ? `Error at ${state.errorLine.proc}, line ${state.errorLine.line}`
+    : state.pc !== null ? `Stopped at ${state.proc}, line ${state.pc}` : 'Ready');
   syncUI();
 }
 
 async function doRunToCursor() {
+  if (state.running || state.stepping) return;
+  if (state.pc === null) startNewRun();
+  else if (backToCounterProcedure()) showRunningProcedure();   // the window was browsing
+  /* the caret line of the procedure on screen; right after a browse the window
+     is back on the counter, so there is no other line to run to any more */
   const target = state.cursor;
-  if (state.running) return;
-  if (state.pc === null) { clearRunState(); state.pc = firstExecutable(state.proc); }
   state.running = true; state.stopRequested = false;
   setStatus('Running to cursor…', true);
   while (state.pc !== null && state.pc !== target && !state.stopRequested) {
@@ -2954,6 +3634,7 @@ async function doRunToCursor() {
     renderProgram();
     if (!(await execute(cur, n))) { state.pc = null; break; }
     state.pc = advancePc(cur, n);
+    showRunningProcedure();
   }
   state.running = false;
   setStatus(state.errorLine ? `Error at line ${state.errorLine.line}`
@@ -2961,7 +3642,10 @@ async function doRunToCursor() {
   syncUI();
 }
 
-function doStop() { if (state.running) state.stopRequested = true; }
+function doStop() {
+  if (state.running) state.stopRequested = true;
+  prefetchCancel();                        // the program is not going to read them now
+}
 
 /* ==========================================================================
    GRAPHICS TOOLS: profile / histogram / 3D plot
@@ -3093,6 +3777,8 @@ function showModal(title, html) {
 }
 function closeModal() {
   $('#modal-overlay').classList.add('hidden');
+  const m = document.querySelector('#modal-overlay .modal');
+  if (m) m.style.width = '';               // dialogs that widen themselves reset it
   $('#modal-ok').textContent = 'OK';       // error boxes borrow the button ("Go to line")
   $('#modal-ok').onclick = closeModal;
 }
@@ -3111,12 +3797,17 @@ $$('.menu-title').forEach(btn => btn.addEventListener('click', e => {
 document.addEventListener('click', () => $$('.menu.open').forEach(m => m.classList.remove('open')));
 
 const CMD = {
-  run: doRun, runtocursor: doRunToCursor, step: doStep, stepover: doStep,
+  run: doRun, runtocursor: doRunToCursor,
+  step: () => doStep('into'), stepover: () => doStep('over'),
   stop: doStop, reset: doReset,
   new()  { newProgram(); },
   open() { openProgram(); },
   save() { saveProgram(); },
   saveas() { saveProgramAs(); },
+  loadimg() { openImageFile(); },
+  loadfolder() { openImageFolder(); },
+  setdir() { setWorkingFolder(); },
+  opensrv() { openProgramFromServer(); },
   quit() { log('Exit: close the browser tab to quit.', 'msg'); },
   about() {
     showModal('About OpenCVS',
@@ -3127,6 +3818,7 @@ const CMD = {
        <p class="dim">Runs entirely in your browser.</p>`);
   },
   opdialog() { openOperatorDialog(); },
+  times() { setShowTimes(!state.showTimes); },
   resetlayout() { resetLayout(); },
   cascade() { wmCascade(); },
   tileh() { wmTile(true); },
@@ -3505,7 +4197,7 @@ function saveLayout() {
       },
       breakpoints: [...state.breakpoints],
       proc: state.proc,
-      editorKind: state.editorKind,
+      showTimes: state.showTimes,
       tabs: { vars: state.varsTab, op: state.opTab, hist: state.histTab },
       program: Object.fromEntries(Object.entries(PROCEDURES).map(([k, v]) => [k, v.lines.slice()])),
     }));
@@ -3555,9 +4247,9 @@ function loadLayout() {
     $('#proc-select').value = L.proc;
     $('#status-proc').textContent = `Procedure: ${L.proc}`;
   }
-  if (L.editorKind === 'monaco' || L.editorKind === 'classic') {
-    state.editorKind = L.editorKind;
-    $('#editor-kind').value = L.editorKind;
+  if (L.showTimes === false) {                 // the times column can be switched off
+    state.showTimes = false;
+    $('#menu-times')?.classList.remove('checked');
   }
   if (L.tabs) {
     state.varsTab = L.tabs.vars || 'iconic';
@@ -3646,67 +4338,30 @@ wireTabs('variable-tabs', tab => { state.varsTab = tab; renderVariables(); });
 wireTabs('history-tabs', tab => { state.histTab = tab; renderHistory(); });
 
 /* ---------------- program window: code editor ---------------- */
-/* The editor is a transparent textarea over a syntax-highlighted pre: native
-   caret, selection, copy/paste, undo. The gutter holds breakpoints/pc arrow. */
-const edInput = $('#editor-input');
-
+/* The Program Window is a Monaco (VS Code) editor; the text lives in the model,
+   the interpreter reads it back from PROCEDURES.  These helpers move the text
+   and the caret between the two. */
 function editorLoad() {
-  if (state.editorKind === 'monaco' && monacoEditor) {
-    monacoApplyGuard = true;
-    monacoEditor.setValue(linesOf(state.proc).join('\n'));
-    monacoApplyGuard = false;
-    monacoEditor.setPosition({ lineNumber: 1, column: 1 });
-    monacoRefreshDecorations();
-  } else {
-    edInput.value = linesOf(state.proc).join('\n');
-  }
-  renderProgram();
+  if (!monacoEditor) return;                     // not loaded (yet): nothing to show
+  monacoApplyGuard = true;
+  monacoEditor.setValue(linesOf(state.proc).join('\n'));
+  monacoApplyGuard = false;
+  monacoEditor.setPosition({ lineNumber: 1, column: 1 });
+  monacoRefreshDecorations();
 }
 
-function edCaretLine() {
-  return edInput.value.slice(0, edInput.selectionStart || 0).split('\n').length;
-}
-
-function edEnsureVisible() {
-  const gl = $$('#editor-gutter .gl')[edCaretLine() - 1];
-  if (!gl) return;
-  const code = $('#program-code');
-  const top = gl.offsetTop, h = code.clientHeight || 400;
-  if (top < code.scrollTop + 8 || top > code.scrollTop + h - 30) {
-    code.scrollTop = Math.max(0, top - h / 3);
-  }
-}
-
-/* caret position drives the selected line (operator window + status bar follow) */
-function edSyncCursor() {
-  const pos = edInput.selectionStart || 0;
-  const lineStart = edInput.value.lastIndexOf('\n', pos - 1) + 1;
-  const line = edCaretLine();
-  if (line !== state.cursor) {
-    state.cursor = line;
-    renderProgram();
-    renderOperator();
-  }
-  $('#status-line').textContent = `Line: ${line}, Col: ${pos - lineStart + 1}`;
-  edEnsureVisible();
-}
-
-function edFocusLine(n) {
-  const L = linesOf(state.proc);
-  const line = Math.max(1, Math.min(n, L.length));
+/* Put the caret on a program line and make sure that line is on screen.  This is
+   how the Program Window follows the program counter: stepping to a line outside
+   the visible part of the text must scroll (Monaco does that itself with
+   revealLineInCenterIfOutsideViewport); `focus` is false for automatic calls, so
+   a run does not take the keyboard focus away from the Variable Window etc. */
+function edFocusLine(n, focus = true) {
+  const line = Math.max(1, Math.min(n, linesOf(state.proc).length));
   state.cursor = line;
-  if (state.editorKind === 'monaco' && monacoEditor) {
+  if (monacoEditor) {
     monacoEditor.setPosition({ lineNumber: line, column: 1 });
     monacoEditor.revealLineInCenterIfOutsideViewport(line);
-    monacoEditor.focus();
-  } else {
-    let pos = 0;
-    for (let i = 0; i < line - 1; i++) pos += L[i].length + 1;
-    edInput.value = L.join('\n');
-    edInput.focus();
-    edInput.setSelectionRange(pos, pos);
-    const gl = $$('#editor-gutter .gl')[line - 1];
-    if (gl) $('#program-code').scrollTop = Math.max(0, gl.offsetTop - 40);
+    if (focus) monacoEditor.focus();
   }
   renderProgram();
   renderOperator();
@@ -3722,43 +4377,71 @@ function edEditAnchor(prevLines, nextLines) {
   while (k < n && prevLines[k] === nextLines[k]) k++;
   const first = k + 1;                      // 1-based first line that changed
   if (state.pc === null) return;
+  if (state.pcProc !== state.proc) return;  // the counter sits in another procedure: not our lines
   if (state.pc > first) state.pc = first;   // edited line is above it -> move up to it
   if (state.pc > nextLines.length) state.pc = Math.max(1, nextLines.length);
 }
 
-edInput.addEventListener('input', () => {
-  const prev = PROCEDURES[state.proc].lines.slice();
-  const next = edInput.value.split('\n');
-  PROCEDURES[state.proc].lines = next;
-  edEditAnchor(prev, next);
-  if (edInput.scrollTop) edInput.scrollTop = 0;    // overlay stays aligned; #program-code scrolls
-  renderProgram();
-  renderVariables();
-  renderOperator();
-  paintThumbs();
-  $('#proc-modified').style.visibility = 'visible';
-  scheduleSave();
-  edSyncCursor();
-});
-edInput.addEventListener('keyup', edSyncCursor);
-edInput.addEventListener('click', () => {
-  if (edInput.scrollTop) edInput.scrollTop = 0;
-  edSyncCursor();
-});
-edInput.addEventListener('keydown', e => {
-  if (e.key === 'Tab') {                                   // indent with spaces
-    e.preventDefault();
-    edInput.setRangeText('    ', edInput.selectionStart, edInput.selectionEnd, 'end');
-    edInput.dispatchEvent(new Event('input'));
-  } else if (e.key === 'Enter') {                          // auto-indent: carry leading whitespace
-    e.preventDefault();
-    const pos = edInput.selectionStart;
-    const lineStart = edInput.value.lastIndexOf('\n', pos - 1) + 1;
-    const indent = (edInput.value.slice(lineStart, pos).match(/^\s*/) || [''])[0];
-    edInput.setRangeText('\n' + indent, edInput.selectionStart, edInput.selectionEnd, 'end');
-    edInput.dispatchEvent(new Event('input'));
+/* ---------------- Alt+Enter: open the procedure a line calls ----------------
+   HDevelop opens the sub-procedure of the active line with Alt+Enter (each
+   procedure is a window of its own there).  Here the Program Window shows one
+   procedure at a time, so opening it means switching the window; the Procedure
+   box above the window follows and is the way back to the caller.  The running
+   line stays where it is: a step after browsing continues the caller (the
+   program counter remembers its procedure, see `state.pc`). */
+
+/* the user procedure the caret line calls, or null.  The word under the caret is
+   looked at first — but the caret may just as well sit in an argument, so the
+   operator of the line itself is the fallback.  Only names the interpreter
+   would call (`PROCEDURES`) count: an operator is never "opened". */
+function subProcedureAtCaret() {
+  const known = n => (n && PROCEDURES[n]) ? n : null;
+  const pos = monacoEditor && monacoEditor.getPosition();
+  if (pos && monacoEditor.getModel()) {
+    const hit = known((monacoEditor.getModel().getWordAtPosition(pos) || {}).word);
+    if (hit) return hit;
   }
-});
+  const parsed = parseLine(lineText(state.proc, state.cursor) || '');
+  return known(parsed && parsed.op);
+}
+
+/* show another procedure of the program in the Program Window, caret on `line` */
+function showProcedure(name, line = 1) {
+  if (!PROCEDURES[name]) return false;
+  state.proc = name;
+  state.cursor = line;
+  const sel = $('#proc-select');
+  if (sel) {
+    /* a procedure that only exists since the program was loaded has no option yet */
+    if (!Array.prototype.some.call(sel.options, o => o.value === name)) sel.add(new Option(name, name));
+    sel.value = name;
+  }
+  const sp = $('#status-proc');
+  if (sp) sp.textContent = `Procedure: ${name}`;
+  editorLoad();
+  edFocusLine(line);
+  renderOperator();
+  renderVariables();
+  renderWatch();
+  return true;   // browsing pushes nothing: the program on the server is not touched
+}
+
+function openSubProcedure() {
+  const name = subProcedureAtCaret();
+  if (!name) {
+    const parsed = parseLine(lineText(state.proc, state.cursor) || '');
+    log(parsed && parsed.op
+      ? `Alt+Enter: '${parsed.op}' is not a procedure of this program.`
+      : 'Alt+Enter: this line does not call a procedure.', 'msg');
+    return;
+  }
+  if (name === state.proc) {
+    log(`Alt+Enter: '${name}' is the procedure already open.`, 'msg');
+    return;
+  }
+  showProcedure(name);
+  log(`Opened procedure '${name}' (Alt+Enter) — the Procedure box above the Program Window goes back.`, 'msg');
+}
 
 /* gutter click toggles the breakpoint */
 function toggleBp(key) {
@@ -3766,13 +4449,9 @@ function toggleBp(key) {
   renderProgram();
   scheduleSave();
 }
-$('#editor-gutter').addEventListener('click', e => {
-  const gl = e.target.closest('.gl');
-  if (gl) toggleBp(gl.dataset.bp);
-});
 
 /* ---------------- VS Code editor (Monaco), vendored under vendor/monaco ---------------- */
-/* Loaded lazily on first use; the classic textarea editor remains the fallback. */
+/* Loaded lazily by loadMonaco(); it is the only Program Window editor. */
 let monacoEditor = null, monacoDecorations = [], monacoApplyGuard = false, monacoLoadPromise = null;
 let monacoDecGuard = false;   // deltaDecorations must not be re-entered (Monaco throws)
 window.MonacoEnvironment = {
@@ -3793,7 +4472,7 @@ function monacoReady() {
 function monacoRefreshDecorations() {
   if (!monacoEditor || monacoDecGuard) return;
   monacoDecGuard = true;
-  try { monacoApplyDecorations(); } finally { monacoDecGuard = false; }
+  try { monacoApplyDecorations(); monacoRenderTimes(); } finally { monacoDecGuard = false; }
 }
 
 function monacoApplyDecorations() {
@@ -3809,7 +4488,7 @@ function monacoApplyDecorations() {
         stickiness: m.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges },
     });
   }
-  if (state.pc !== null && state.pc <= linesOf(state.proc).length) {
+  if (state.pc !== null && state.pcProc === state.proc && state.pc <= linesOf(state.proc).length) {
     dec.push({
       range: new m.Range(state.pc, 1, state.pc, 1),
       options: { isWholeLine: true, className: 'mpc', glyphMarginClassName: 'mpc-arrow',
@@ -3984,6 +4663,8 @@ function setupMonaco(m) {
     fixedOverflowWidgets: true,
     padding: { top: 2 },
   });
+  monacoEditor.onDidScrollChange(() => monacoRenderTimes());   // the times do not scroll themselves
+  monacoEditor.onDidLayoutChange(() => monacoRenderTimes());   // a resize moves the gutter band
   monacoEditor.onDidChangeModelContent(() => {
     if (monacoApplyGuard) return;
     const next = monacoEditor.getValue().split('\n');
@@ -4009,6 +4690,17 @@ function setupMonaco(m) {
          t === m.editor.MouseTargetType.GUTTER_LINE_NUMBERS)) {
       toggleBp(`${state.proc}:${e.target.position.lineNumber}`);
     }
+  });
+  /* Alt+Enter itself is handled on the document (see the keyboard section): an
+     action of this editor cannot own the key, because Monaco resolves no
+     dynamic keybindings in this build.  The action is kept for the context menu
+     and the command palette; its `run` is what both routes end in. */
+  monacoEditor.addAction({
+    id: 'ovs.openSubProcedure',
+    label: 'Open Sub-Procedure',
+    contextMenuGroupId: 'navigation',
+    contextMenuOrder: 1.5,
+    run: () => openSubProcedure(),
   });
   m.languages.registerCompletionItemProvider('halcon', {
     triggerCharacters: ['('],
@@ -4067,43 +4759,23 @@ function setupMonaco(m) {
   monacoRefreshDecorations();
 }
 
-async function setEditorKind(kind, save = true) {
-  if (kind === 'monaco') {
-    if (!monacoEditor) {
-      setStatus('Loading VS Code editor…');
-      const m = await monacoReady();
-      if (!m) {
-        log('VS Code editor (Monaco) failed to load — using the classic editor.', 'err');
-        kind = 'classic';
-      } else {
-        setupMonaco(m);
-      }
-    }
-    if (monacoEditor) {
-      state.editorKind = 'monaco';
-      monacoApplyGuard = true;
-      const pos = monacoEditor.getPosition();
-      monacoEditor.setValue(linesOf(state.proc).join('\n'));
-      monacoApplyGuard = false;
-      const nLines = linesOf(state.proc).length;
-      monacoEditor.setPosition(pos && pos.lineNumber <= nLines
-        ? pos : { lineNumber: Math.min(state.cursor, nLines), column: 1 });
-      monacoEditor.focus();
-    }
-  } else {
-    state.editorKind = 'classic';
-    edInput.value = linesOf(state.proc).join('\n');   // pull any Monaco edits back
+/* Create the Program Window editor.  Called once, from init(); the scripts it
+   needs (the Monaco loader and editor bundles) are fetched on first call. */
+async function loadMonaco() {
+  if (monacoEditor) return monacoEditor;
+  setStatus('Loading VS Code editor…');
+  const m = await monacoReady();
+  if (!m) {
+    log('VS Code editor (Monaco) failed to load — the Program Window stays empty.', 'err');
+    setStatus('Ready');
+    return null;
   }
-  const useMonaco = state.editorKind === 'monaco';
-  $('#editor-classic').classList.toggle('hidden', useMonaco);
-  $('#editor-monaco').classList.toggle('hidden', !useMonaco);
-  $('#editor-kind').value = state.editorKind;
+  setupMonaco(m);
   renderProgram();
   renderOperator();
   setStatus('Ready');
-  if (save) scheduleSave();
+  return monacoEditor;
 }
-$('#editor-kind').addEventListener('change', e => setEditorKind(e.target.value));
 
 /* ---------------- program files: Open / Save (.odev, .hdev) ----------------
    A program is one text file holding every procedure, each introduced by a
@@ -4112,7 +4784,7 @@ $('#editor-kind').addEventListener('change', e => setEditorKind(e.target.value))
    Saving defaults to `.odev`. HDevelop `.hdev` files are read as well
    (`procedure <name> (...)` … `endprocedure` blocks, plus the main program
    before the first procedure); a bare operator list loads as `main`. */
-const PROGRAM_ACCEPT = '.odev,.hdev,text/plain';
+const PROGRAM_ACCEPT = '.odev,.hdev,.ovs,text/plain';
 const PROGRAM_FILTER = {
   description: 'OpenCVS / HDevelop program',
   accept: { 'text/plain': ['.odev', '.hdev'] },
@@ -4128,7 +4800,9 @@ function serializeProgramFile() {
   const names = Object.keys(PROCEDURES).filter(n => n === 'main' || !isBuiltinDemo(n));
   const dropped = Object.keys(PROCEDURES).length - names.length;
   return {
-    text: names.map(n => `* procedure: ${n}\n${PROCEDURES[n].lines.join('\n')}`).join('\n') + '\n',
+    text: names.map(n =>
+      `* procedure: ${n}${procSignatureText(PROCEDURES[n].params)}\n${PROCEDURES[n].lines.join('\n')}`
+    ).join('\n') + '\n',
     dropped,
   };
 }
@@ -4212,6 +4886,50 @@ function parseHdevelopXml(text) {
   return procs;
 }
 
+/* The signature of a procedure in the OpenCVS program format.  It is written on
+   the '* procedure:' line in HALCON's order — iconic inputs : iconic outputs :
+   control inputs : control outputs — with groups left empty where there are
+   none, exactly like HDevelop prints a procedure's signature:
+     * procedure: find_center (BaseImage : CenterCross, Cross : : Row, Column)
+   A program without signatures can still not pass arguments (HDevelop: "the
+   procedure declares no interface"); `_` discards an argument at the call. */
+const OVS_IFACE_GROUPS = [['iconic', 'in'], ['iconic', 'out'], ['ctrl', 'in'], ['ctrl', 'out']];
+function parseProcSignature(text) {
+  if (text == null || !String(text).trim()) return null;
+  const groups = String(text).trim().replace(/^\(([\s\S]*)\)$/, '$1').split(':');
+  if (groups.length > OVS_IFACE_GROUPS.length) {
+    log(`Procedure signature '${String(text).trim()}' has ${groups.length} groups — at most 4 ` +
+      '(iconic in : iconic out : control in : control out).', 'err');
+    return null;
+  }
+  const params = [];
+  for (let gi = 0; gi < groups.length; gi++) {
+    const [type, dir] = OVS_IFACE_GROUPS[gi];
+    for (const raw of groups[gi].split(',')) {
+      const name = raw.trim();
+      if (!name) continue;
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+        log(`Procedure signature '${String(text).trim()}': '${name}' is not a parameter name.`, 'err');
+        return null;
+      }
+      params.push({ name, type, dir });
+    }
+  }
+  return params.length ? params : null;
+}
+
+/* the signature of `params` as it is written on the '* procedure:' line, empty
+   for a procedure without one (main, or any procedure taking no arguments) */
+function procSignatureText(params) {
+  if (!Array.isArray(params) || !params.length) return '';
+  const groups = [[], [], [], []];
+  for (const p of params) {
+    const gi = p.type === 'iconic' ? (p.dir === 'out' ? 1 : 0) : (p.dir === 'out' ? 3 : 2);
+    groups[gi].push(p.name);
+  }
+  return ` (${groups.map(g => g.join(', ')).join(' : ')})`;
+}
+
 function parseProgram(text) {
   const trim = a => { const b = a.slice(); while (b.length && !b[b.length - 1].trim()) b.pop(); return b; };
   const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
@@ -4221,8 +4939,14 @@ function parseProgram(text) {
   } else if (lines.some(l => /^\s*\*\s*procedure\s*:/i.test(l))) {    // OpenCVS program format
     let cur = null;
     for (const l of lines) {
-      const m = l.match(/^\s*\*\s*procedure\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
-      if (m) { cur = m[1]; if (!procs[cur]) procs[cur] = []; continue; }
+      const m = l.match(/^\s*\*\s*procedure\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*(\([\s\S]*\))?\s*$/i);
+      if (m) {
+        cur = m[1];
+        if (!procs[cur]) procs[cur] = [];
+        const sig = parseProcSignature(m[2]);          // the '(…)' of the header line
+        if (sig) procs[cur].params = sig;
+        continue;
+      }
       if (cur) procs[cur].push(l);
     }
   } else if (lines.some(l => /^\s*procedure\s+[A-Za-z_]/i.test(l))) {  // HDevelop .hdev
@@ -4263,8 +4987,23 @@ function setProgramFileLabel() {
   document.title = `OpenCVisionStudio (OpenCVS) — ${name}`;
 }
 
-/* replace the whole program with the contents of a file */
-function loadProgram(text, fileName) {
+/* does any procedure of the loaded program read the folder it lives in? */
+function usesProgramFolder() {
+  for (const proc of Object.values(PROCEDURES)) {
+    for (const text of (proc.lines || [])) {
+      const op = parseLine(text)?.op;
+      if (op === 'list_image_files') return true;
+    }
+  }
+  return false;
+}
+
+/* replace the whole program with the contents of a file.  `dirHint` is the
+   folder the program was fetched from when it has a URL (see
+   openProgramFromServer); a program picked from disk has none.  The empty
+   string is a *known* folder (the page's own, which the dev server can list),
+   so it is told apart from "unknown" by `null`/`undefined` */
+function loadProgram(text, fileName, dirHint = null) {
   const procs = parseProgram(text);
   const names = Object.keys(procs);
   if (!names.length || !names.some(n => procs[n].length)) {
@@ -4273,7 +5012,7 @@ function loadProgram(text, fileName) {
   }
   for (const k of Object.keys(PROCEDURES)) delete PROCEDURES[k];
   for (const n of names) PROCEDURES[n] = { lines: procs[n], params: procs[n].params };
-  state.proc = names.includes('main') ? 'main' : names[0];
+  state.proc = entryProcName();
   state.progFile = fileName || state.progFile;
   resetProgramState();
   refreshProcSelect();
@@ -4282,6 +5021,34 @@ function loadProgram(text, fileName) {
   setStatus('Ready');
   log(`Opened '${fileName}' — ${names.length} procedure(s): ${names.join(', ')}.`, 'msg');
   pushProgramToServer();
+  /* The folder the program reads (list_image_files ('./')).  A program with a
+     URL carries its folder with it; a program picked from disk has none, but a
+     folder granted or loaded for this program name once is remembered. */
+  if (dirHint != null) {
+    IMAGE_DIR = dirHint;
+    IMAGE_DIR_HANDLE = null;
+    IMAGE_URLS.clear();
+    renderOperator();
+  } else {
+    const remembered = recallProgDir(fileName);
+    if (remembered != null && !IMAGE_DIR && !IMAGE_DIR_HANDLE) {
+      IMAGE_DIR = remembered;
+      const shown = remembered || '(the page folder)';
+      log(`Working folder: '${shown}' — remembered for '${fileName}'.`, 'msg');
+      renderOperator();
+      if (usesProgramFolder()) {                    // still there? say so if not
+        enumImagesAtDir('./', IMAGE_FILE_RE).then(found => {
+          if (!found) log(`Working folder: '${shown}' cannot be listed any more — grant ` +
+            `the folder again with "Folder…" if the images moved.`, 'warn');
+        }).catch(() => {});
+      }
+    } else if (usesProgramFolder() && !IMAGE_DIR && !IMAGE_DIR_HANDLE) {
+      log('Working folder: none yet — this program reads its own folder with ' +
+        `list_image_files ('./'). A page cannot see the folder '${fileName}' was opened from: ` +
+        'grant it with "Folder…" in the Operator Window (or "Load folder…") before running. ' +
+        'It is then remembered for this program; "Browse Server Folder…" avoids the step.', 'warn');
+    }
+  }
   return true;
 }
 
@@ -4311,6 +5078,7 @@ function resetProgramState() {
   state.stopRequested = false;
   setLive(false);
   clearRunState();
+  clearTimes();                          // the times belong to the program that was replaced
   state.pc = null;
   state.cursor = 1;
   editorLoad();
@@ -4390,63 +5158,103 @@ function saveProgramAs() {
    truth: edit the program in an external editor (e.g. VS Code) and the IDE
    reloads it live; IDE edits write the file back. file:// or plain static
    hosting runs in local mode (no sync). */
-const extSync = { active: false, applying: false };
+const extSync = { active: false, applying: false, ready: false, fromFile: new Set() };
 let pushTimer = null;
 
-function applyExternalProgram(procs, msg) {
+function applyExternalProgram(procs, headers, msg) {
   extSync.applying = true;
-  let changed = false;
+  let changed = false, added = false;
+  const names = new Set();
+  /* A procedure the file defines is created here when the page does not have it
+     yet.  Requiring the name to exist first meant the file was never loaded:
+     a page starts on the built-in demo (main, detect_features, …), so an edit to
+     program.ovs updated the demo's `main` in the editor and the program's own
+     procedures (`find_center`, …) stayed missing — the file on screen, the demo
+     in the run. */
   for (const [name, lines] of Object.entries(procs)) {
-    if (!PROCEDURES[name] || !Array.isArray(lines)) continue;
-    PROCEDURES[name].lines = lines.slice();
+    if (!Array.isArray(lines)) continue;
+    names.add(name);
+    if (!PROCEDURES[name]) { PROCEDURES[name] = { lines: lines.slice() }; added = true; }
+    else PROCEDURES[name].lines = lines.slice();
+    /* the signature of the '* procedure:' line on disk, so an interface typed in
+       the external editor binds arguments exactly like one in the program */
+    const sig = parseProcSignature(headers && headers[name]);
+    if (sig) PROCEDURES[name].params = sig;
+    else delete PROCEDURES[name].params;
     changed = true;
   }
+  /* a procedure that an earlier version of the file defined and this one does
+     not is gone from the program; the built-in demo procedures, which no file
+     ever defines, stay where they are */
+  for (const old of extSync.fromFile) {
+    if (!names.has(old) && PROCEDURES[old]) { delete PROCEDURES[old]; changed = true; }
+  }
+  extSync.fromFile = names;
   if (changed) {
     state.pc = null;
     editorLoad();
     renderVariables();
     renderOperator();
+    if (added) refreshProcSelect();       // the dropdown lists the file's procedures
     log(msg, 'msg');
   }
   extSync.applying = false;
+  extSync.ready = true;                   // program.ovs has been read: pushes may start
 }
 
 function pushProgramToServer() {
-  if (!extSync.active || extSync.applying) return;
+  /* Not before program.ovs has been read: init renders the window layout and
+     the first display re-renders the taskbar, both of which save, and a push
+     from the demo state would write the demo over the program on disk. */
+  if (!extSync.active || !extSync.ready || extSync.applying) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
+    /* Only the procedures that are yours are written back — the same rule as
+       Save Program (main plus everything that differs from the built-in demo).
+       PROCEDURES also holds the demo procedures the IDE starts with, and
+       sending them turned program.ovs into demo + program: *any* incidental
+       save did it, because re-rendering the taskbar, switching a tab, dragging
+       a splitter and toggling a breakpoint all call this.  Losing the file to
+       a window drag is not a thing that should be possible. */
+    const names = Object.keys(PROCEDURES).filter(n => n === 'main' || !isBuiltinDemo(n));
+    const procs = {}, headers = {};
+    for (const n of names) {
+      procs[n] = PROCEDURES[n].lines;
+      headers[n] = procSignatureText(PROCEDURES[n].params);
+    }
     fetch('/api/program', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        procs: Object.fromEntries(Object.entries(PROCEDURES).map(([k, v]) => [k, v.lines])),
-      }),
+      body: JSON.stringify({ procs, headers }),
     }).catch(() => {});
   }, 250);
 }
 
 async function initExtSync() {
-  try {
-    const r = await fetch('/api/program');
-    if (!r.ok) return;                       // not served by tools/serve.js
-    extSync.active = true;
-    const data = await r.json();
-    if (data.procs && Object.keys(data.procs).length) {
-      applyExternalProgram(data.procs, 'Program loaded from program.ovs (external editor sync active).');
-    } else {
-      pushProgramToServer();                 // first run: seed the file from the editor content
-    }
-    const es = new EventSource('/events');
-    es.onmessage = ev => {
-      try {
-        const d = JSON.parse(ev.data);
-        if (d.kind === 'program') {
-          applyExternalProgram(d.procs, 'program.ovs changed on disk - program reloaded.');
-        }
-      } catch (e) { /* ignore malformed events */ }
-    };
-    log('External editor sync active (program.ovs).', 'msg');
-  } catch (e) { /* no dev server: local single-page mode */ }
+  let r;
+  /* Only the request is allowed to fail quietly (file:// has no dev server):
+     an error while *applying* the program must not be swallowed, or a program
+     that does not load looks like a program that is already loaded. */
+  try { r = await fetch('/api/program'); } catch (e) { return; }
+  if (!r.ok) return;                       // not served by tools/serve.js
+  extSync.active = true;
+  const data = await r.json();
+  if (data.procs && Object.keys(data.procs).length) {
+    applyExternalProgram(data.procs, data.headers, 'Program loaded from program.ovs (external editor sync active).');
+  } else {
+    extSync.ready = true;                  // nothing on disk to protect
+    pushProgramToServer();                 // first run: seed the file from the editor content
+  }
+  const es = new EventSource('/events');
+  es.onmessage = ev => {
+    try {
+      const d = JSON.parse(ev.data);
+      if (d.kind === 'program') {
+        applyExternalProgram(d.procs, d.headers, 'program.ovs changed on disk - program reloaded.');
+      }
+    } catch (e) { /* ignore malformed events */ }
+  };
+  log('External editor sync active (program.ovs).', 'msg');
 }
 
 /* ---------------- operator insert line + autocomplete ---------------- */
@@ -4541,40 +5349,19 @@ opInput.addEventListener('keydown', e => {
 
 function commitLine() {
   const text = opInput.value.trim();
-  if (!text) return;
-  if (state.editorKind === 'monaco' && monacoEditor) {
-    const line = Math.min(monacoEditor.getPosition()?.lineNumber || state.cursor, linesOf(state.proc).length);
-    monacoEditor.executeEdits('op-input', [{
-      range: new window.monaco.Range(line, 1, line, 1),
-      text: text + '\n',
-      forceMoveMarkers: true,
-    }]);
-    monacoEditor.setPosition({ lineNumber: line, column: text.length + 1 });
-    monacoEditor.focus();
-    state.cursor = line;
-    opInput.value = '';
-    peditMode.textContent = '';
-    $('#proc-modified').style.visibility = 'visible';
-    scheduleSave();
-    log(`Line inserted: ${text}`, 'msg');
-    return;
-  }
-  const pos = edInput.selectionStart ?? edInput.value.length;
-  const lineStart = edInput.value.lastIndexOf('\n', pos - 1) + 1;
-  const at = edInput.value.slice(0, lineStart).split('\n').length - 1;   // insert before the caret line
-  const L = PROCEDURES[state.proc].lines;
-  L.splice(at, 0, text);
-  edInput.value = L.join('\n');
-  state.cursor = at + 1;
+  if (!text || !monacoEditor) return;
+  const line = Math.min(monacoEditor.getPosition()?.lineNumber || state.cursor, linesOf(state.proc).length);
+  monacoEditor.executeEdits('op-input', [{
+    range: new window.monaco.Range(line, 1, line, 1),
+    text: text + '\n',
+    forceMoveMarkers: true,
+  }]);
+  monacoEditor.setPosition({ lineNumber: line, column: text.length + 1 });
+  monacoEditor.focus();
+  state.cursor = line;
   opInput.value = '';
   peditMode.textContent = '';
-  edInput.focus();
-  edInput.setSelectionRange(lineStart + text.length, lineStart + text.length);
   $('#proc-modified').style.visibility = 'visible';
-  renderProgram();
-  renderOperator();
-  paintThumbs();
-  renderVariables();
   scheduleSave();
   log(`Line inserted: ${text}`, 'msg');
 }
@@ -4590,16 +5377,13 @@ function repaintVarCard(name) {
 }
 
 $('#proc-select').addEventListener('change', e => {
-  state.proc = e.target.value;
-  state.pc = null;
-  state.cursor = 1;
-  $('#status-proc').textContent = `Procedure: ${state.proc}`;
-  $('#status-line').textContent = 'Line: 1, Col: 1';
-  editorLoad();
-  renderOperator();
-  renderVariables();
-  renderWatch();
-  scheduleSave();
+  /* Picking a procedure here is browsing, exactly like Alt+Enter: the window
+     switches, a paused run keeps its counter (F5/F6/F8 snap back to the line the
+     program is at, see backToCounterProcedure) and the program is not pushed
+     back to the server. */
+  if (!showProcedure(e.target.value)) return;
+  const sl = $('#status-line');
+  if (sl) sl.textContent = 'Line: 1, Col: 1';
 });
 
 /* ---------------- variable window ---------------- */
@@ -4744,17 +5528,55 @@ function setLive(on) {
 }
 
 /* ---------------- keyboard ---------------- */
+/* Registered in the *capture* phase on purpose.  Monaco binds some of these keys
+   itself — F8 is "go to the next marker" in the VS Code keymap it inherits — and
+   the editor calls stopPropagation() for a key it handles, so a bubble-phase
+   listener never saw F8 while the program window had focus.  The focus sits in
+   the editor between two steps, so F8 (Step Over) did nothing at all for a real
+   user.  Handling the key on the way down, and stopping it there, keeps it for
+   the debugger.  Escape is left to propagate: the operator input and the folder
+   browser use it for their own autocomplete / dialog. */
+/* Right Alt (AltGr) arrives as Ctrl+Alt on Windows, so a plain "no modifiers"
+   test would drop it and "Ctrl+Alt" alone would swallow left-hand combos.  The
+   AltGraph state the platform reports for the right-hand key tells them apart;
+   the tracked Alt keydown covers engines that do not report it. */
+function altGrNow(e) {
+  try { if (e.getModifierState && e.getModifierState('AltGraph')) return true; } catch (err) { /* not a real event */ }
+  return altIsRight && e.ctrlKey;
+}
+let altIsRight = false;   // which Alt is held down (see the Alt+Enter branch)
 document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
-  if (mod && (e.key === 'o' || e.key === 'O')) { e.preventDefault(); openProgram(); }
-  else if (mod && (e.key === 's' || e.key === 'S')) { e.preventDefault(); e.shiftKey ? saveProgramAs() : saveProgram(); }
-  else if (e.key === 'F5') { e.preventDefault(); e.ctrlKey ? doRunToCursor() : doRun(); }
-  else if (e.key === 'F6') { e.preventDefault(); doStep(); }
-  else if (e.key === 'F8') { e.preventDefault(); doStep(); }
-  else if (e.key === 'F2') { e.preventDefault(); doReset(); }
-  else if (e.key === 'F1') { e.preventDefault(); openOperatorDialog(); }
-  else if (e.key === 'Escape') { closeModal(); $$('.menu.open').forEach(m => m.classList.remove('open')); }
-});
+  const take = () => { e.preventDefault(); e.stopPropagation(); };
+  if (e.key === 'Alt') { altIsRight = e.location === 2 || e.code === 'AltRight'; return; }  // Alt+Enter accepts both sides
+  if (mod && (e.key === 'o' || e.key === 'O')) { take(); openProgram(); }
+  else if (mod && (e.key === 's' || e.key === 'S')) { take(); e.shiftKey ? saveProgramAs() : saveProgram(); }
+  /* HDevelop's "open the sub-procedure".  Monaco cannot give this key to an
+     editor action: `addAction({keybindings})` registers a *dynamic* keybinding
+     and those are not resolved by this build of the standalone editor (checked
+     at runtime — a freshly added action with the same key never fires, while a
+     built-in binding like Alt+Up does), so the key is taken here, on the way
+     down, before Monaco sees it.  A text field of another window (operator
+     input, folder browser, watch expression) keeps Alt+Enter for itself.
+
+     Both Alt keys work.  Right Alt is AltGr, which Windows reports as Ctrl+Alt:
+     the Alt keydown above remembers which side it came from (`e.location === 2`,
+     which is also what `getModifierState('AltGraph')` says where the platform
+     reports it), so the right-hand key is not mistaken for a Ctrl shortcut.
+     A left Ctrl+left Alt+Enter stays untouched. */
+  else if (e.altKey && e.key === 'Enter' && (!mod || altGrNow(e))) {
+    const t = document.activeElement;
+    const editable = t && (/^(INPUT|TEXTAREA)$/.test(t.tagName) || t.isContentEditable);
+    if (editable && !$('#editor-monaco').contains(t)) return;
+    take(); openSubProcedure();
+  }
+  else if (e.key === 'F5') { take(); e.ctrlKey ? doRunToCursor() : doRun(); }
+  else if (e.key === 'F6') { take(); doStep('into'); }   // into a procedure
+  else if (e.key === 'F8') { take(); doStep('over'); }   // over a call
+  else if (e.key === 'F2') { take(); doReset(); }
+  else if (e.key === 'F1') { take(); openOperatorDialog(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closeModal(); $$('.menu.open').forEach(m => m.classList.remove('open')); }
+}, true);
 
 /* ---------------- resize: handled per graphics window by its own ResizeObserver ---------------- */
 
@@ -4769,19 +5591,24 @@ function init() {
   setStatus('Loading OpenCV WASM…');
   refreshProcSelect();
   setProgramFileLabel();
-  editorLoad();
-  setEditorKind(state.editorKind, false);   // enforce restored editor visibility (may load Monaco)
+  loadMonaco();                             // the Program Window editor (created once)
   initExtSync();
   waitOpenCV().then(ok => { if (ok) log('OpenCV WASM runtime ready.', 'msg'); });
   log('OpenCVS demo started.', 'msg');
-  log("Program 'program.ovs' loaded (main, detect_features).", 'msg');
+  /* What is loaded here is the built-in demo, not program.ovs — saying
+     "program.ovs loaded" was wrong and made a stale procedure table look
+     like a file that had been read.  The dev server pushes the real program
+     through the external sync, which logs its own "Opened …" line. */
+  log(`Demo program loaded (${Object.keys(PROCEDURES).join(', ')}).`, 'msg');
   if (restored) log('Layout restored from previous session.', 'msg');
-  log('Press F5 to run, F6 to step.', 'msg');
+  log('Press F5 to run, F6 to step into a procedure, F8 to step over it, ' +
+      'Alt+Enter to open the procedure a program line calls.', 'msg');
   renderProgram();
   renderOperator();
   renderVariables();
   renderHistory();
   renderTaskbar();
+  probePageFolder();
   setFitChecked(mainGfx, true);
   resizeGraphics();
   renderGraphics(mainGfx);

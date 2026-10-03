@@ -22,6 +22,7 @@ const MIME = {
   '.png': 'image/png', '.svg': 'image/svg+xml', '.ttf': 'font/ttf',
   '.wasm': 'application/wasm', '.md': 'text/plain; charset=utf-8',
   '.txt': 'text/plain; charset=utf-8', '.ovs': 'text/plain; charset=utf-8',
+  '.hdev': 'text/plain; charset=utf-8', '.odev': 'text/plain; charset=utf-8',
 };
 
 /* Seed for program.ovs on first run. Keep in sync with PROCEDURES in js/app.js. */
@@ -150,25 +151,36 @@ const DEFAULT_PROGRAM = [
 ].join('\n');
 
 /* ---- program.ovs <-> procedures map (human-editable text format) ---- */
+/* The header line may carry the procedure's signature — `* procedure: name
+   (iconic in : iconic out : control in : control out)` — which is what binds
+   a procedure's arguments, so it is kept verbatim instead of being parsed. */
 function parseOvs(text) {
-  const procs = {};
+  const procs = {}, headers = {};
   let current = null;
   for (const raw of text.split(/\r?\n/)) {
-    const m = raw.match(/^\s*\*\s*procedure:\s*([A-Za-z_][A-Za-z0-9_]*)\s*$/i);
-    if (m) { current = m[1]; procs[current] = []; continue; }
+    /* the signature group keeps the whitespace in front of it, so the header is
+       written back exactly as it was read (no space is inserted or lost) */
+    const m = raw.match(/^\s*\*\s*procedure:\s*([A-Za-z_][A-Za-z0-9_]*)((?:\s*\([\s\S]*\))?)\s*$/i);
+    if (m) { current = m[1]; procs[current] = []; headers[current] = m[2] || ''; continue; }
     if (current) procs[current].push(raw);
   }
   for (const lines of Object.values(procs)) {
     while (lines.length && lines[lines.length - 1] === '') lines.pop();
   }
-  return procs;
+  return { procs, headers };
 }
 
-function serializeOvs(procs) {
+function serializeOvs(procs, headers) {
   return Object.entries(procs)
-    .map(([name, lines]) => `* procedure: ${name}\n${(lines || []).join('\n')}`)
+    .map(([name, lines]) => {
+      const sig = (headers && headers[name]) || '';
+      return `* procedure: ${name}${sig}\n${(lines || []).join('\n')}`;
+    })
     .join('\n') + '\n';
 }
+
+/* everything that defines the program file, for change detection */
+function procsKey(procs, headers) { return JSON.stringify([procs, headers]); }
 
 /* ---- SSE clients ---- */
 const clients = new Set();
@@ -183,17 +195,17 @@ setInterval(() => {
 /* ---- file watching (external edits) ---- */
 let selfWriting = false, lastSerialized = null;
 function readProgramProcs() {
-  try { return parseOvs(fs.readFileSync(PROGRAM_FILE, 'utf8')); } catch (e) { return {}; }
+  try { return parseOvs(fs.readFileSync(PROGRAM_FILE, 'utf8')); } catch (e) { return { procs: {}, headers: {} }; }
 }
 function watchProgram() {
   fs.watch(path.dirname(PROGRAM_FILE), (evt, fname) => {
     if (selfWriting || !fname || fname !== path.basename(PROGRAM_FILE)) return;
     setTimeout(() => {                       // let the writer finish
-      const procs = readProgramProcs();
-      const serialized = JSON.stringify(procs);
+      const { procs, headers } = readProgramProcs();
+      const serialized = procsKey(procs, headers);
       if (serialized === lastSerialized) return;
       lastSerialized = serialized;
-      broadcast({ kind: 'program', procs });
+      broadcast({ kind: 'program', procs, headers });
     }, 60);
   });
 }
@@ -212,26 +224,67 @@ function serveStatic(req, res, urlPath) {
   if (!file.startsWith(ROOT) || p.split('/').some(seg => seg.startsWith('.'))) {
     res.writeHead(403); res.end('forbidden'); return;
   }
-  fs.readFile(file, (err, data) => {
-    if (err) { res.writeHead(404); res.end('not found'); return; }
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
-    res.end(data);
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) { res.writeHead(404); res.end('not found'); return; }
+    /* The page is served from a folder that is being edited while it is open,
+       and answering without any cache header let the browser keep running the
+       previous js/*.js after a reload — a fix then looks like "nothing
+       changed".  Revalidate on every request instead, and answer 304 when the
+       file did not change, so the 11 MB opencv.js is not re-sent. */
+    const last = st.mtime.toUTCString();
+    if (req.headers['if-modified-since'] === last) { res.writeHead(304); res.end(); return; }
+    fs.readFile(file, (e2, data) => {
+      if (e2) { res.writeHead(404); res.end('not found'); return; }
+      res.writeHead(200, {
+        'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+        'Cache-Control': 'no-cache',
+        'Last-Modified': last,
+      });
+      res.end(data);
+    });
   });
+}
+
+/* ---- directory listing (the browser asks for this; it cannot list a folder) ---- */
+function listDir(relDir) {
+  /* the query parameter arrives already decoded, so it is not decoded again:
+     a folder called %20 would otherwise turn into a space */
+  const dir = path.normalize(path.join(ROOT, relDir));
+  if (dir !== ROOT && !dir.startsWith(ROOT + path.sep)) return null;   // never leave ROOT
+  let items;
+  try { items = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return null; }
+  const dirs = [], files = [];
+  for (const it of items) {
+    if (it.name.startsWith('.')) continue;                             // no dotfiles
+    if (it.isDirectory()) dirs.push(it.name + '/');
+    else if (it.isFile()) files.push(it.name);
+  }
+  const rel = path.relative(ROOT, dir).split(path.sep).join('/');
+  return { dir: rel ? rel + '/' : '', dirs, files };                   // '' == the page's own folder
 }
 
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  /* Folder listing. A page cannot list a directory itself, and a plain static
+     server cannot either (it answers with index.html), so the IDE asks here to
+     browse the project and to resolve list_image_files ('./'). */
+  if (u.pathname === '/api/list' && req.method === 'GET') {
+    const info = listDir(u.searchParams.get('path') || '/');
+    return info ? sendJson(res, 200, info) : sendJson(res, 404, { ok: false });
+  }
   if (u.pathname === '/api/program' && req.method === 'GET') {
-    return sendJson(res, 200, { procs: readProgramProcs() });
+    const { procs, headers } = readProgramProcs();
+    return sendJson(res, 200, { procs, headers });
   }
   if (u.pathname === '/api/program' && req.method === 'POST') {
     let body = '';
     req.on('data', c => { body += c; if (body.length > 2e6) req.destroy(); });
     req.on('end', () => {
       try {
-        const procs = parseOvs(serializeOvs(JSON.parse(body).procs || {}));
-        const text = serializeOvs(procs);
-        lastSerialized = JSON.stringify(procs);
+        const sent = JSON.parse(body);
+        const { procs, headers } = parseOvs(serializeOvs(sent.procs || {}, sent.headers || {}));
+        const text = serializeOvs(procs, headers);
+        lastSerialized = procsKey(procs, headers);
         selfWriting = true;
         fs.writeFile(PROGRAM_FILE, text, err => {
           selfWriting = false;
@@ -261,10 +314,60 @@ if (!fs.existsSync(PROGRAM_FILE)) {
   fs.writeFileSync(PROGRAM_FILE, DEFAULT_PROGRAM);
   console.log(`seeded ${path.relative(ROOT, PROGRAM_FILE)}`);
 }
-lastSerialized = JSON.stringify(readProgramProcs());
+lastSerialized = procsKey(...Object.values(readProgramProcs()));
 watchProgram();
-server.listen(PORT, () => {
-  console.log(`OpenCVS dev server:  http://localhost:${PORT}/`);
+
+/* ---- startup: bind the port, survive a port that is already taken ----
+   A stale server from an earlier F5 used to make the new one die with an
+   unhandled EADDRINUSE. Two cases, handled explicitly:
+     * the occupant is another OpenCVS dev server (same folder, so it serves the
+       same thing) -> announce its URL and exit 0; F5's serverReadyAction still
+       opens the page, the already running server keeps serving;
+     * the occupant is some other program -> move on to the next free port and
+       announce the URL that is actually in use. */
+function announce(port, note) {
+  console.log(`OpenCVS dev server:  http://localhost:${port}/`);
+  if (note) console.log(note);
   console.log(`program file:        ${PROGRAM_FILE}`);
   console.log('Edit program.ovs in VS Code - changes sync to the IDE live.');
-});
+}
+
+/* Is the process holding `port` one of ours? /api/program is OpenCVS-specific.
+   The callback must fire exactly once: destroying the request on timeout makes
+   Node emit 'error' as well, and a second call would start a second listener. */
+function probeOvs(port, cb) {
+  let done = false;
+  const finish = ok => { if (!done) { done = true; cb(ok); } };
+  const req = http.get({ host: '127.0.0.1', port, path: '/api/program', timeout: 1500 }, res => {
+    let body = '';
+    res.on('data', c => { body += c; if (body.length > 8192) req.destroy(); });
+    res.on('end', () => finish(res.statusCode === 200 && /"procs"\s*:/.test(body)));
+  });
+  req.on('error', () => finish(false));
+  req.on('timeout', () => { req.destroy(); finish(false); });
+}
+
+let attemptPort = PORT;          // one 'listening' handler for all attempts: a
+server.on('listening', () => announce(attemptPort));   // per-listen callback would
+                                                       // also fire for the failed port
+function start(port, attemptsLeft) {
+  attemptPort = port;
+  server.once('error', err => {
+    if (err.code !== 'EADDRINUSE') throw err;
+    probeOvs(port, ours => {
+      if (ours) {
+        announce(port, `note: an OpenCVS dev server already listens on ${port} - reusing it, nothing started here.`);
+        // the fs watcher keeps the loop alive, so leave via the flush callback
+        process.stdout.write('', () => process.exit(0));
+      } else if (attemptsLeft <= 0) {
+        console.error(`port ${port} is in use by another program and no free port in ${PORT}-${port}.`);
+        process.exit(1);
+      } else {
+        console.log(`port ${port} is in use by another program - trying ${port + 1}...`);
+        start(port + 1, attemptsLeft - 1);
+      }
+    });
+  });
+  server.listen(port);
+}
+start(PORT, 9);
