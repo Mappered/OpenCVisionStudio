@@ -1250,7 +1250,9 @@ const OP_IMPLS = {
       gray: gray.data.slice(0, gray.cols * gray.rows),
       dispose() { gray.delete(); },
     });
-    ctx.displayImage(args[0]);
+    /* fit: a freshly read image is fitted to the window, so reading one shows
+       the whole frame even when the previous image was zoomed or panned */
+    ctx.displayImage(args[0], true);
     /* The time is worth reporting: a 5088×3840 PNG takes ~0.5 s to read the
        first time, a repeat read of the same file ~10 ms. */
     if (known) {

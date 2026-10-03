@@ -283,8 +283,8 @@ const OPINFO = {
   },
   threshold: {
     params: [['Image', 'input', 'iconic'], ['Region', 'output', 'iconic'],
-             ['MinGray', 'input', 'control'], ['MaxGray', 'input', 'control']],
-    desc: 'Segments a region of gray values <code>MinGray</code> &hellip; <code>MaxGray</code>.',
+             ['MinGray', 'input', 'control', '128'], ['MaxGray', 'input', 'control', '255']],
+    desc: 'Segments a region of gray values <code>MinGray</code> &hellip; <code>MaxGray</code> (HALCON defaults 128/255).',
   },
   connection: {
     params: [['Region', 'input', 'iconic'], ['ConnectedRegions', 'output', 'iconic']],
@@ -292,9 +292,9 @@ const OPINFO = {
   },
   select_shape: {
     params: [['Regions', 'input', 'iconic'], ['SelectedRegions', 'output', 'iconic'],
-             ['Features', 'input', 'control'], ['Operation', 'input', 'control'],
-             ['Min', 'input', 'control'], ['Max', 'input', 'control']],
-    desc: 'Selects regions with the given shape feature (here: <code>area</code>).',
+             ['Features', 'input', 'control', "'area'"], ['Operation', 'input', 'control', "'and'"],
+             ['Min', 'input', 'control', '150'], ['Max', 'input', 'control', '99999']],
+    desc: 'Selects regions with the given shape feature (HALCON defaults <code>area</code>, <code>and</code>, 150, 99999).',
   },
   count_obj: {
     params: [['Objects', 'input', 'iconic'], ['Number', 'output', 'control']],
@@ -511,7 +511,7 @@ const OPINFO = {
   },
   mean_image: {
     params: [['Image', 'input', 'iconic'], ['ImageMean', 'output', 'iconic'],
-             ['MaskWidth', 'input', 'control'], ['MaskHeight', 'input', 'control']],
+             ['MaskWidth', 'input', 'control', '9'], ['MaskHeight', 'input', 'control', '9']],
     desc: `Smooths <code>Image</code> with a mean (box) filter of size
            <code>MaskWidth</code> &times; <code>MaskHeight</code> and returns the
            smoothed image. The usual preprocessing step before
@@ -519,17 +519,18 @@ const OPINFO = {
   },
   dyn_threshold: {
     params: [['OrigImage', 'input', 'iconic'], ['ThresholdImage', 'input', 'iconic'],
-             ['RegionDynThresh', 'output', 'iconic'], ['Offset', 'input', 'control'],
-             ['LightDark', 'input', 'control']],
+             ['RegionDynThresh', 'output', 'iconic'], ['Offset', 'input', 'control', '5'],
+             ['LightDark', 'input', 'control', "'light'"]],
     desc: `Segments the pixels of <code>OrigImage</code> whose gray value differs
            from the locally smoothed <code>ThresholdImage</code> by more than
            <code>Offset</code>. <code>LightDark</code> selects what is returned:
            <code>'light'</code>, <code>'dark'</code>, <code>'equal'</code> or
-           <code>'not_equal'</code>.`,
+           <code>'not_equal'</code>. HALCON's defaults are <code>Offset</code> = 5
+           and <code>LightDark</code> = <code>'light'</code>.`,
   },
   select_shape_std: {
     params: [['Regions', 'input', 'iconic'], ['SelectedRegions', 'output', 'iconic'],
-             ['ShapeFeature', 'input', 'control'], ['Percent', 'input', 'control', '70']],
+             ['ShapeFeature', 'input', 'control', "'max_area'"], ['Percent', 'input', 'control', '70']],
     desc: `Selects regions by a standard shape: <code>'max_area'</code> (the
            largest region, as in HALCON without using <code>Percent</code>),
            <code>'rectangle1'</code> / <code>'rectangle2'</code> (a region whose
@@ -596,23 +597,158 @@ const OPINFO = {
 };
 Object.assign(OPINFO, METROLOGY_OPINFO);
 
+/* The values a control parameter can take, shown as a dropdown in the Parameters
+   tab so a keyword is picked instead of typed.  Only the values THIS BUILD
+   implements are listed — the operator rejects the others (HALCON knows many
+   more: select_shape has 34 further region features, fit_ellipse_contour_xld
+   four further algorithms …).  Keyed by "operator.Parameter", because the same
+   parameter name means different things in different operators; a value that is
+   a function is evaluated on use (the colour names are defined further down). */
+const colorValues = () => Object.keys(DEV_NAMED);
+const PARAM_VALUES = {
+  /* display parameters */
+  'dev_open_window.Background': colorValues,
+  'dev_set_color.ColorName': () => ['[]', ...colorValues()],
+  'dev_set_draw.Mode': ['fill', 'margin'],
+  'dev_set_colored.NumColors': ['3', '6', '12'],
+  'dev_update_window.Mode': ['on', 'off'],
+  'dev_set_paint.Mode': ['default', '3d_plot', 'histogram', 'bars'],
+  'disp_message.CoordSystem': ['window', 'image'],
+  'disp_message.Color': colorValues,
+  'disp_message.Box': ['true', 'false'],
+  /* segmentation */
+  'select_shape.Features': ['area', 'row', 'column', 'row1', 'row2',
+    'column1', 'column2', 'width', 'height', 'ratio'],
+  'select_shape.Operation': ['and', 'or'],
+  'select_shape_std.ShapeFeature': ['max_area', 'rectangle1', 'rectangle2',
+    'min_area', 'original'],
+  'dyn_threshold.LightDark': ['light', 'dark', 'equal', 'not_equal'],
+  /* files */
+  'open_file.FileType': ['output'],
+  /* XLD */
+  'gen_circle_contour_xld.PointOrder': ['positive', 'negative'],
+  'gen_ellipse_contour_xld.PointOrder': ['positive', 'negative'],
+  'gen_contour_region_xld.Mode': ['border', 'border_holes'],
+  'fit_circle_contour_xld.Algorithm': ['geotukey', 'geometric', 'geohuber',
+    'algebraic', 'atukey', 'ahuber'],
+  'fit_ellipse_contour_xld.Algorithm': ['fitzgibbon', 'ftukey', 'fhuber',
+    'focpoints', 'fptukey', 'fphuber', 'geometric', 'geotukey', 'geohuber', 'voss'],
+  'fit_line_contour_xld.Algorithm': ['tukey', 'huber', 'drop', 'gauss', 'regression'],
+  'fit_rectangle2_contour_xld.Algorithm': ['tukey', 'huber', 'regression'],
+  /* metrology */
+  'get_metrology_object_measures.Transition': ['all', 'positive', 'negative'],
+};
+
+/* the values of `param` of `op`, or null when it has no fixed set */
+function paramValues(op, param) {
+  const v = PARAM_VALUES[`${op}.${param}`];
+  const list = v ? (typeof v === 'function' ? v() : v) : null;
+  return list && list.length ? list : null;
+}
+
+/* how a value of a list is written into the program: a HALCON keyword is a
+   string literal ('fill'), a number and a tuple are not (3, [1, 2], []), and a
+   bare word that is neither (a file name) is a string again ('benchs.png') */
+const valueLiteral = v => {
+  const s = String(v);
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return `'${s}'`;
+  return /^[-+.\d]/.test(s) || /^['"[]/.test(s) ? s : `'${s}'`;
+};
+
+/* a value inside an HTML attribute — esc() does not cover the quote */
+const attr = s => esc(String(s)).replace(/"/g, '&quot;');
+
 /* Entering an operator writes its call the way HDevelop does: parameters with a
    documented default are filled in with it, the remaining ones are written as
    placeholders (their name) and the caret is placed on the first of them, so
-   Tab/Enter steps through the arguments that still have to be chosen. */
-function opInsertEntries(op) {
+   Tab/Enter steps through the arguments that still have to be chosen.
+
+   With a context ({ proc, line } of the call that is being written) the iconic
+   inputs are filled from the program as well: each one takes the most recent
+   iconic result of the preceding lines whose type fits.  That is what turns
+
+     read_image (Image, 'printer_chip')            -> Image
+     mean_image (Image, ImageMean, 9, 9)           -> ImageMean
+     dyn_threshold (Image, ImageMean, RegionDynThresh, 5, 'light')
+
+   into the arguments the completion and the operator input line write. */
+function opInsertEntries(op, ctx) {
   const info = OPINFO[op];
   if (!info) return [];
-  return info.params.map(p => ({
-    name: p[0],
-    txt: p.length > 3 ? String(p[3]) : p[0],
-    placeholder: p.length <= 3,
-  }));
+  const linked = ctx ? linkIconicInputs(op, iconicResultsBefore(ctx.proc, ctx.line)) : [];
+  return info.params.map((p, i) => {
+    if (linked[i]) return { name: p[0], txt: linked[i], placeholder: false, linked: true };
+    return { name: p[0], txt: p.length > 3 ? String(p[3]) : p[0], placeholder: p.length <= 3 };
+  });
+}
+
+/* The data type of an iconic value: 'image', 'region' or 'xld'.  Every HALCON
+   parameter is named after what it holds, so the name carries the type, and the
+   operator name covers the generic ones ('Cross', 'Rectangle'); a value the
+   program has already produced knows its type for certain.  All names are
+   tested together, type by type, so gen_cross_contour_xld's `Cross` comes out
+   as a contour rather than as a region. */
+function iconicKind(rec, ...names) {
+  if (rec && rec.kind) return rec.kind;
+  const s = names.map(n => String(n == null ? '' : n)).join(' ');
+  if (/contour|xld/i.test(s)) return 'xld';
+  if (/image/i.test(s)) return 'image';
+  if (/region|rectangle|circle|ellipse|polygon|cross|mask/i.test(s)) return 'region';
+  return '';
+}
+
+/* May a value of type `have` be handed to an input of type `want`?  An unknown
+   type on either side fits, because HALCON variables are untyped at the source
+   level (`Circle` may well hold a contour). */
+const iconicKindFits = (want, have) => !want || !have || want === have;
+
+/* The iconic results of the lines before `line` (1-based, within `proc`),
+   newest first and without duplicates.  Only operator calls count — parseLine
+   understands nothing else — which is exactly what a following line can link
+   to. */
+function iconicResultsBefore(proc, line) {
+  const out = [], seen = new Set();
+  const L = linesOf(proc);
+  for (let i = Math.min(line, L.length + 1) - 2; i >= 0; i--) {
+    const p = parseLine(L[i]);
+    if (!p) continue;
+    const info = OPINFO[p.op];
+    if (!info) continue;
+    p.args.forEach((a, k) => {
+      const param = info.params[k];
+      if (!param || param[1] !== 'output' || param[2] !== 'iconic') return;
+      if (seen.has(a) || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(a)) return;
+      seen.add(a);
+      out.push({ name: a, kind: iconicKind(state.iconic.get(a), param[0], p.op) });
+    });
+  }
+  return out;
+}
+
+/* Fill the iconic inputs of `op` from those results.  The inputs are served
+   from the last one backwards, so the newest result lands on the input nearest
+   to its producer: dyn_threshold's ThresholdImage is the filtered image of the
+   line above, while OrigImage keeps the older original.  An input without a
+   fitting, unused result keeps its name as placeholder. */
+function linkIconicInputs(op, results) {
+  const info = OPINFO[op];
+  if (!info) return [];
+  const fill = [], used = new Set();
+  for (let i = info.params.length - 1; i >= 0; i--) {
+    const p = info.params[i];
+    if (p[1] !== 'input' || p[2] !== 'iconic') continue;
+    const want = iconicKind(null, p[0]);
+    const hit = results.find(r => !used.has(r.name) && iconicKindFits(want, r.kind));
+    if (!hit) continue;
+    used.add(hit.name);
+    fill[i] = hit.name;
+  }
+  return fill;
 }
 
 /* argument text plus the offset of every argument inside it */
-function opArgText(op) {
-  const entries = opInsertEntries(op);
+function opArgText(op, ctx) {
+  const entries = opInsertEntries(op, ctx);
   let off = 0;
   const starts = entries.map(e => { const s = off; off += e.txt.length + 2; return s; });
   return { entries, starts, text: entries.map(e => e.txt).join(', ') };
@@ -1254,6 +1390,7 @@ function renderProgram() {
 /* ---------------- operator window ---------------- */
 function renderOperator() {
   const body = $('#operator-body');
+  closeValueMenu();                 // the panel is redrawn: the list belongs to it
   const text = lineText(state.proc, state.cursor) || '';
   const parsed = parseLine(text);
 
@@ -1290,11 +1427,14 @@ function renderOperator() {
       const def = r.p.length > 3 ? String(r.p[3]) : '';
       const missing = r.v === undefined || r.v === '';
       const val = missing ? '' : r.v;
+      /* what the field starts with: the argument, or the operator default of an
+         argument the line does not pass (that field is marked with .def) */
+      const shown = missing && def ? def : val;
+      const values = isIconic ? null : paramValues(parsed.op, r.p[0]);
+      const field = paramField(r.i, r.p[0], isIconic, shown, values, missing && def ? def : '');
       const valHtml = isIconic
-        ? `<span class="pval iconic">${iconicThumb(val)}<span>${esc(val)}</span></span>`
-        : `<span class="pval${missing && def ? ' def' : ''}"` +
-          `${missing && def ? ' title="default — the program line passes no argument here"' : ''}>` +
-          `${esc(missing && def ? def : val)}</span>`;
+        ? `<span class="pval iconic${missing && def ? ' def' : ''}">${iconicThumb(val)}${field}</span>`
+        : field;
       return `<div class="op-row"><span class="dir ${dir === 'input' ? 'in' : 'out'}">${dir === 'input' ? '&#9654;' : '&#9664;'}</span>` +
              `<span class="pname">${r.p[0]}</span>${valHtml}` +
              `<span class="pkind">${r.p[2]}</span></div>`;
@@ -1302,6 +1442,122 @@ function renderOperator() {
   };
   body.innerHTML = html + imageSourceBar(parsed) +
     section('Input parameters', 'input') + section('Output parameters', 'output');
+}
+
+/* The value of one parameter as a field.  Every parameter is typed into — a
+   control input and output, an iconic variable name (typing another name renames
+   it in the line).  A parameter with a fixed set of values (PARAM_VALUES) gets an
+   arrow that opens the whole list (see toggleValueMenu), so select_shape's
+   Features can be picked instead of remembered.  An argument the line does not
+   pass starts with the operator default, marked with .def. */
+function paramField(i, name, isIconic, shown, values, def) {
+  const text = String(shown == null ? '' : shown).trim();
+  const title = isIconic
+    ? 'variable name — typing another name renames it in the program line'
+    : values
+    ? (def ? 'the operator default — the line passes no argument here; type or pick a value to write one'
+           : 'type a value, or pick one from the list — it is written into the program line')
+    : 'type a value, a variable or an expression — it is written into the program line';
+  /* the field sits *inside* the value box when the box has to hold something
+     else too (the region thumbnail of an iconic value, the arrow of a list) and
+     *is* the box otherwise — see the .pval rules in css/style.css */
+  const cls = isIconic || values ? 'pval-in' : `pval pval-in${def ? ' def' : ''}`;
+  const input = `<input class="${cls}" data-arg="${i}" data-pname="${attr(name)}"` +
+    ` value="${attr(text)}"` + (text || !def ? '' : ` placeholder="${attr(def)}"`) +
+    ` spellcheck="false" title="${attr(title)}">`;
+  if (!values) return input;
+  return `<span class="pval pval-box${def ? ' def' : ''}">${input}` +
+    `<span class="pval-arrow" data-pick="${i}" title="every ${attr(name)} the operator accepts">&#9662;</span></span>`;
+}
+
+/* The whole value list a field's arrow opens.  This cannot be a native
+   <datalist>: the browser filters its options by the text in the field, so a
+   field holding 'area' offered 'area' alone instead of select_shape's ten
+   features — the list looked incomplete.  The menu is a <div> in <body> (the
+   Operator Window scrolls, and a list inside it would be clipped) positioned
+   under the field. */
+let pvalMenu = null;      // the <div> the list is drawn into (made on first use)
+let pvalMenuFor = -1;     // the data-arg of the field that opened it
+
+function valueMenuEl() {
+  if (pvalMenu) return pvalMenu;
+  pvalMenu = document.createElement('div');
+  pvalMenu.className = 'pval-menu';
+  pvalMenu.hidden = true;
+  /* mousedown, not click: the field must not commit its (unfinished) text while
+     the pick is on its way */
+  pvalMenu.addEventListener('mousedown', e => {
+    const item = e.target.closest('.pval-item');
+    if (!item) return;
+    e.preventDefault();
+    const i = +item.dataset.pick;
+    const field = $(`#operator-body input[data-arg="${i}"]`);
+    closeValueMenu();
+    if (!field) return;
+    field.value = item.dataset.val;
+    setLineArg(i, item.dataset.val, field.dataset.pname);
+  });
+  document.body.appendChild(pvalMenu);
+  /* a click anywhere else closes it — the arrow itself toggles it, so it is left
+     to the click handler of the Operator Window */
+  document.addEventListener('mousedown', e => {
+    if (!pvalMenu.hidden && !e.target.closest('.pval-menu') && !e.target.closest('[data-pick]')) {
+      closeValueMenu();
+    }
+  });
+  return pvalMenu;
+}
+
+function closeValueMenu() {
+  if (pvalMenu && !pvalMenu.hidden) { pvalMenu.hidden = true; pvalMenu.innerHTML = ''; }
+  pvalMenuFor = -1;
+}
+
+/* open the value list of the field i — or close it again when it is already that
+   field's, which is what its arrow should do */
+function toggleValueMenu(i) {
+  const field = $(`#operator-body input[data-arg="${i}"]`);
+  if (!field) return;
+  if (pvalMenu && !pvalMenu.hidden && pvalMenuFor === i) { closeValueMenu(); return; }
+  const parsed = parseLine(lineText(state.proc, state.cursor) || '');
+  if (!parsed || !OPINFO[parsed.op]) return;
+  const values = paramValues(parsed.op, field.dataset.pname);
+  if (!values || !values.length) return;
+  const cur = String(field.value).trim().toLowerCase();
+  const m = valueMenuEl();
+  m.innerHTML = values.map(v => {
+    const lit = valueLiteral(v);
+    return `<div class="pval-item${String(lit).toLowerCase() === cur ? ' cur' : ''}"` +
+           ` data-pick="${i}" data-val="${attr(lit)}">${esc(lit)}</div>`;
+  }).join('');
+  m.hidden = false;
+  pvalMenuFor = i;
+  const box = field.closest('.pval') || field;
+  const r = box.getBoundingClientRect();
+  m.style.minWidth = `${Math.round(r.width)}px`;
+  const mr = m.getBoundingClientRect();
+  m.style.left = `${Math.round(Math.max(4, Math.min(r.left, window.innerWidth - mr.width - 4)))}px`;
+  const below = r.bottom + 2;
+  m.style.top = `${Math.round(below + mr.height > window.innerHeight - 4
+    ? Math.max(4, r.top - mr.height - 2) : below)}px`;
+}
+
+/* what the text typed into a parameter field means.  One of the operator's values
+   (PARAM_VALUES) becomes that value, so a keyword need not be quoted ('margin');
+   everything that already is an expression — a number, a tuple, a quoted string,
+   a variable, a call — is written as it is; a bare word with punctuation (a file
+   name, a path) becomes a string. */
+function typedLiteral(op, name, raw) {
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return '';
+  const values = paramValues(op, name);
+  if (values) {
+    const hit = values.find(v => String(v).toLowerCase() === s.toLowerCase());
+    if (hit !== undefined) return valueLiteral(hit);
+  }
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s)) return s;      // a variable
+  if (/^[-+.\d]/.test(s) || /^['"[]/.test(s)) return s;   // a number, a tuple, a literal
+  return `'${s.replace(/'/g, "''")}'`;                   // a file name / a path
 }
 
 function iconicThumb(name) {
@@ -1527,6 +1783,89 @@ async function readImageLine(n) {
   catch (e) { log(`read_image: ${e.message}`, 'err'); }
   renderOperator();
   paintThumbs();
+}
+
+/* Write one parameter of the call on the selected program line — the fields of
+   the Parameters tab (see paramField), typed into or picked from a list.  What
+   was typed is turned into a HALCON expression first (see typedLiteral).  An
+   argument the line does not pass is appended along with the arguments before it
+   (their HALCON defaults), so the call stays well-formed, and the line is then
+   executed like a stepped line, so the new value shows up in the graphics window
+   at once.  `focusEditor` is true only for an explicit Enter: typing a value then
+   ends in the Program Window, while picking a value from the list leaves the
+   keyboard where it was, in the field, so the next value can be typed at once. */
+async function setLineArg(i, typed, param, focusEditor = false) {
+  const n = state.cursor;
+  const text = lineText(state.proc, n) || '';
+  const parsed = parseLine(text);
+  if (!parsed || !OPINFO[parsed.op]) return;
+  const literal = typedLiteral(parsed.op, param, typed);
+  if (!literal) {                       // an emptied field: the line keeps its value
+    log(`Line ${n}: the ${param} field was emptied — the program line keeps its value.`, 'warn');
+    renderOperator();
+    return;
+  }
+  const spans = argSpans(text);
+  let next;
+  if (spans && spans[i]) {
+    next = text.slice(0, spans[i].start) + literal + text.slice(spans[i].end);
+  } else {
+    const open = text.indexOf('('), close = text.lastIndexOf(')');
+    if (open < 0 || close < open) { renderOperator(); return; }
+    const add = [];
+    for (let k = spans ? spans.length : 0; k < i; k++) {
+      const e = opInsertEntries(parsed.op)[k];
+      add.push(e ? e.txt : '');           // the arguments in between, with their defaults
+    }
+    add.push(literal);
+    const sep = text.slice(open + 1, close).trim() ? ', ' : '';   // dev_set_draw () -> ('margin')
+    next = text.slice(0, close).replace(/[\s,]+$/, '') + sep + add.join(', ') + text.slice(close);
+  }
+  if (next === text) { renderOperator(); return; }   // the field shows the line again
+  linesOf(state.proc)[n - 1] = next;
+  $('#proc-modified').style.visibility = 'visible';
+  editorLoad();
+  edFocusLine(n, focusEditor);
+  scheduleSave();
+  log(`Line ${n}: ${parsed.op}'s ${param} set to ${literal}.`, 'msg');
+  if (state.running) { renderOperator(); return; }
+  /* The line is run so the new value shows up in the graphics window at once —
+     but only when the variables it reads are defined: before the program has
+     been started (or stepped to this line) its inputs do not exist, and running
+     the line would only halt with 'not defined' and put the error box in the way
+     of the next field.  The reason is logged instead.  The rewritten line is
+     what is inspected, so renaming an argument to a variable that does not exist
+     yet is caught as well. */
+  const undef = undefinedInputs(parseLine(next));
+  if (undef.length) {
+    log(`Line ${n}: ${parsed.op} was not run — ${undef.map(v => `'${v}'`).join(', ')} ` +
+      `${undef.length > 1 ? 'are' : 'is'} not defined yet (run F5, or step to the line first).`, 'msg');
+    renderOperator();
+    paintThumbs();
+    return;
+  }
+  try { await execute(state.proc, n); }
+  catch (e) { log(`${parsed.op}: ${e.message}`, 'err'); }
+  renderOperator();
+  paintThumbs();
+}
+
+/* The input variables of a parsed line that the program has not produced yet (a
+   literal argument needs no variable), so the line cannot be run on its own. */
+function undefinedInputs(parsed) {
+  if (!parsed) return [];
+  const info = OPINFO[parsed.op];
+  if (!info) return [];
+  const missing = [];
+  parsed.args.forEach((a, i) => {
+    const p = info.params[i];
+    if (!p || p[1] !== 'input') return;
+    const v = String(a == null ? '' : a).trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(v)) return;
+    if (p[2] === 'iconic' ? state.iconic.has(v) : state.ctrl.has(v)) return;
+    if (!missing.includes(v)) missing.push(v);
+  });
+  return missing;
 }
 
 /* ---------------- the folder a program reads from ---------------- */
@@ -1780,9 +2119,35 @@ $('#operator-body').addEventListener('click', e => {
   if (e.target.closest('[data-loadfolder]')) openImageFolder();
   if (e.target.closest('[data-setdir]')) setWorkingFolder();
   if (e.target.closest('[data-browse]')) openProgramFromServer();
+  const arrow = e.target.closest('[data-pick]');      // the arrow of a value field
+  if (arrow) toggleValueMenu(+arrow.dataset.pick);
 });
 $('#operator-body').addEventListener('change', e => {
   if (e.target.id === 'op-imgsrc') setImageSource(e.target.value);
+  /* a parameter field of the Parameters tab (see paramField) — committed when
+     the field loses focus */
+  else if (e.target.dataset && e.target.dataset.arg !== undefined) {
+    setLineArg(+e.target.dataset.arg, e.target.value, e.target.dataset.pname);
+  }
+});
+/* a parameter field commits on Enter as well — that is what typing a value ends
+   with — ArrowDown opens its value list, and Escape closes the list or puts the
+   value of the line back */
+$('#operator-body').addEventListener('keydown', e => {
+  if (!e.target.dataset || e.target.dataset.arg === undefined) return;
+  const pick = e.target.parentElement && e.target.parentElement.querySelector('[data-pick]');
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    closeValueMenu();
+    setLineArg(+e.target.dataset.arg, e.target.value, e.target.dataset.pname, true);
+  } else if (e.key === 'ArrowDown' && pick) {
+    e.preventDefault();
+    toggleValueMenu(+e.target.dataset.arg);
+  } else if (e.key === 'Escape') {
+    if (pvalMenu && !pvalMenu.hidden) { closeValueMenu(); return; }
+    e.target.value = e.target.defaultValue;
+    e.target.blur();
+  }
 });
 
 /* ---------------- variable window ---------------- */
@@ -2169,19 +2534,23 @@ function paintPrimitive(g2, prim, p, G) {
    full image, and redraws them (e.g. when the window is resized).  G.items is
    that history; G.base is the full image underneath it.
    -------------------------------------------------------------------------- */
-function gfxResetPart(G) {
+function gfxResetPart(G, force = false) {
   G.part = null;
-  if (fitChecked(G)) fitView(G);
+  if (force) setFitChecked(G, true);      // a freshly read image turns Fit on again
+  if (force || fitChecked(G)) fitView(G);
   else { G.view.scale = 1; G.view.ox = 0; G.view.oy = 0; }
 }
-function gfxShowImage(G, name) {          // display of a full image -> clears the history
+/* `fit` is set by read_image: a newly read image is fitted to the window even
+   when the user had zoomed or panned it (and even when the new frame happens to
+   have the same size as the previous one, which used to keep the old view). */
+function gfxShowImage(G, name, fit = false) {   // display of a full image -> clears the history
   const rec = state.iconic.get(name);
   const prev = G.base && state.iconic.get(G.base);
   const c = recCanvas(rec);               // a lazy canvas is built now: it is shown
   const pcv = recCanvas(prev);
   G.base = name;
   G.items.length = 0;
-  if (c && (!pcv || pcv.width !== c.width || pcv.height !== c.height)) gfxResetPart(G);
+  if (c && (fit || !pcv || pcv.width !== c.width || pcv.height !== c.height)) gfxResetPart(G, fit);
   renderGraphics(G);
   updateStatusSize(G);
 }
@@ -2758,7 +3127,7 @@ function makeOpCtx() {
     },
     defCtrl(name, value, type) { state.ctrl.set(name, { value, type }); },
     ctrl(name) { const v = state.ctrl.get(name); return v ? v.value : undefined; },
-    displayImage(name) { gfxShowImage(gfxActive(), name); },
+    displayImage(name, fit) { gfxShowImage(gfxActive(), name, fit); },
     displayOverlay(name) { gfxShowItem(gfxActive(), name); },
     /* display an object in a specific window (disp_obj / disp_region /
        disp_image); handle undefined = the active window */
@@ -3368,9 +3737,20 @@ function monacoRenderTimes() {
   monacoTimesHost.innerHTML = html;
 }
 
-function setShowTimes(on) {              // Visualization ▸ Execution Times
-  state.showTimes = !!on;
+/* the times toggle lives in two places — the Visualization menu and the
+   toolbar button — and both must show the same state */
+function syncTimesButtons() {
   $('#menu-times')?.classList.toggle('checked', state.showTimes);
+  const tb = $('#tb-times');
+  if (tb) {
+    tb.classList.toggle('on', state.showTimes);
+    tb.setAttribute('aria-pressed', String(state.showTimes));
+  }
+}
+
+function setShowTimes(on) {              // Visualization ▸ Execution Times / toolbar
+  state.showTimes = !!on;
+  syncTimesButtons();
   renderProgram();
   scheduleSave();
 }
@@ -4247,10 +4627,8 @@ function loadLayout() {
     $('#proc-select').value = L.proc;
     $('#status-proc').textContent = `Procedure: ${L.proc}`;
   }
-  if (L.showTimes === false) {                 // the times column can be switched off
-    state.showTimes = false;
-    $('#menu-times')?.classList.remove('checked');
-  }
+  if (L.showTimes === false) state.showTimes = false;   // the times column can be switched off
+  syncTimesButtons();
   if (L.tabs) {
     state.varsTab = L.tabs.vars || 'iconic';
     state.opTab = L.tabs.op || 'parameters';
@@ -4716,16 +5094,25 @@ function setupMonaco(m) {
         state.iconic.forEach((_, k) => items.push({ label: k, kind: m.languages.CompletionItemKind.Value, range }));
         state.ctrl.forEach((_, k) => items.push({ label: k, kind: m.languages.CompletionItemKind.Value, range }));
       } else {
+        /* the line the call is written to is the context its iconic inputs are
+           taken from, so the results of the lines above link into the snippet */
+        const ctx = { proc: state.proc, line: position.lineNumber };
         for (const [name, info] of Object.entries(OPINFO)) {
-          /* like the autocomplete: HDevelop's defaults as snippet text, the
-             remaining parameters as Tab stops (${1:Name}) */
-          const entries = opInsertEntries(name);
+          /* like the autocomplete: HDevelop's defaults and the linked iconic
+             inputs are written as text, the remaining parameters as Tab stops
+             (${1:Name}); they are numbered without gaps so Tab walks them in
+             the order of the arguments */
+          const entries = opInsertEntries(name, ctx);
+          let tab = 0;
+          const args = entries
+            .map(e => e.linked ? e.txt : '${' + (++tab) + ':' + e.txt + '}')
+            .join(', ');
           items.push({
             label: name,
             kind: isDisplayOp(name)
               ? m.languages.CompletionItemKind.Function : m.languages.CompletionItemKind.Method,
             detail: `${name} ( ${info.params.map(p => p[0]).join(', ')} )`,
-            insertText: `${name} ( ${entries.map((e, i) => '${' + (i + 1) + ':' + e.txt + '}').join(', ')} )`,
+            insertText: `${name} ( ${args} )`,
             insertTextRules: m.languages.CompletionItemInsertTextRule.InsertAsSnippet,
             range,
           });
@@ -5269,6 +5656,10 @@ function acCurrentWord() {
   return { word: m ? m[1] : '', start: m ? caret - m[1].length : caret, caret };
 }
 
+/* the line a statement typed into the operator input line will be written to */
+const insertionLine = () =>
+  Math.min(monacoEditor?.getPosition()?.lineNumber || state.cursor, linesOf(state.proc).length);
+
 function buildSuggestions() {
   const { word, start, caret } = acCurrentWord();
   const lw = word.toLowerCase();
@@ -5282,7 +5673,9 @@ function buildSuggestions() {
         badge: isDisplayOp(name) ? 'dev' : 'op',
         sig: `${name} ( ${info.params.map(p => p[0]).join(', ')} )`,
         apply: () => {
-          const { entries, starts, text } = opArgText(name);
+          /* the operator input line is inserted at the caret (commitLine), so
+             that line is where its iconic inputs are linked from */
+          const { entries, starts, text } = opArgText(name, { proc: state.proc, line: insertionLine() });
           const beforeTxt = opInput.value.slice(0, start);
           const afterTxt = opInput.value.slice(caret);
           opInput.value = `${beforeTxt}${name} (${text})${afterTxt}`;
@@ -5350,7 +5743,7 @@ opInput.addEventListener('keydown', e => {
 function commitLine() {
   const text = opInput.value.trim();
   if (!text || !monacoEditor) return;
-  const line = Math.min(monacoEditor.getPosition()?.lineNumber || state.cursor, linesOf(state.proc).length);
+  const line = insertionLine();
   monacoEditor.executeEdits('op-input', [{
     range: new window.monaco.Range(line, 1, line, 1),
     text: text + '\n',
