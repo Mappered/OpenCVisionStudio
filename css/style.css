@@ -162,7 +162,9 @@ body { display: flex; flex-direction: column; }
 #win-operator { flex: 2 1 0; }
 #win-graphics { flex: 5 1 0; }
 #win-history { flex: 0 0 150px; }
-#win-variable { flex: 1 1 auto; }
+/* the Variable Window shares the right column with the Feature Inspection
+   window (which gets a third of it, and is docked there by WIN_HOME) */
+#win-variable { flex: 2 1 0; }
 
 .window.hidden-win { display: none; }
 .window.min > .window-body,
@@ -200,7 +202,12 @@ body { display: flex; flex-direction: column; }
   padding: 0 4px 0 8px; gap: 6px;
   cursor: default;
 }
-.titlebar .title { font-size: 12px; color: var(--text); letter-spacing: .2px; }
+.titlebar .title {
+  /* a narrow window (the right column) must not break the title into two
+     lines and make the bar taller — ellipsize it instead */
+  font-size: 12px; color: var(--text); letter-spacing: .2px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+}
 .tb-icon.win {
   width: 12px; height: 12px; border: 1px solid var(--text-dim); border-radius: 2px; flex: 0 0 auto;
 }
@@ -615,6 +622,7 @@ body { display: flex; flex-direction: column; }
   border-radius: 2px; font: inherit; font-size: 11px; padding: 1px 8px; cursor: pointer;
 }
 .vw-btn:hover { background: var(--bg-4); border-color: var(--accent-dim); }
+.vw-btn.on { background: var(--bg-4); border-color: var(--accent-dim); color: var(--accent); }
 .vw-details {
   margin-left: auto; padding-left: 8px; color: var(--text-dim); font-size: 11px;
   font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -668,3 +676,63 @@ body { display: flex; flex-direction: column; }
 }
 .watch-chip:hover { border-color: var(--accent-dim); color: var(--text); }
 .plot-panel { top: 290px; right: 8px; }
+
+/* ==========================================================================
+   FEATURE INSPECTION WINDOW
+   Left: the feature tree (what can be measured).  Right: the values of the
+   checked features as gauges (HDevelop's Visualization ▸ Feature Inspection).
+   ========================================================================== */
+#win-featureinsp { flex: 1 1 0; }
+#win-featureinsp > .window-body { display: flex; flex-direction: column; overflow: hidden; }
+.fi-bar {
+  /* the window shares the right column and can become very narrow, so the
+     buttons wrap instead of pushing the object label out of the bar */
+  flex: 0 0 auto; min-height: 26px; display: flex; flex-wrap: wrap; align-items: center;
+  gap: 2px 4px; padding: 2px 6px;
+  background: var(--bg-2); border-bottom: 1px solid var(--border);
+}
+.fi-bar .vw-btn { flex: 0 0 auto; white-space: nowrap; }
+.fi-where {
+  margin-left: auto; padding-left: 8px; color: var(--text-dim); font-size: 11px;
+  font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; max-width: 100%;
+}
+.fi-split { flex: 1 1 auto; display: flex; min-height: 0; }
+.fi-tree, .fi-values { overflow: auto; min-width: 0; }
+.fi-tree { flex: 0 0 42%; border-right: 1px solid var(--border-soft); padding: 4px 0 8px; }
+.fi-values { flex: 1 1 auto; padding: 4px 6px 8px; }
+.fi-group {
+  padding: 5px 6px 2px; color: var(--text-dim); font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.fi-item {
+  display: flex; align-items: center; gap: 4px; padding: 1px 6px 1px 8px;
+  font-size: 11px; color: var(--text); cursor: pointer; white-space: nowrap;
+}
+.fi-item:hover { background: var(--bg-3); }
+.fi-item input { margin: 0; flex: 0 0 auto; }
+.fi-item span { overflow: hidden; text-overflow: ellipsis; }
+.fi-item.off { color: var(--text-faint); cursor: default; }
+.fi-item.off:hover { background: none; }
+.fi-row { padding: 3px 4px 4px; border-bottom: 1px solid var(--border-soft); }
+.fi-row-head { display: flex; align-items: baseline; gap: 6px; }
+.fi-name { flex: 1 1 auto; font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
+.fi-val { font-family: var(--font-mono); font-size: 11.5px; color: var(--text); }
+.fi-gauge {
+  position: relative; height: 6px; margin-top: 3px;
+  background: var(--bg-0); border: 1px solid var(--border-soft); border-radius: 2px;
+}
+.fi-fill { height: 100%; background: var(--accent-dim); }
+.fi-gauge.off .fi-fill { background: #8a5a1e; }          /* value outside the gauge range */
+.fi-scale {
+  display: flex; justify-content: space-between; margin-top: 1px;
+  font-family: var(--font-mono); font-size: 9.5px; color: var(--text-faint);
+}
+.fi-status {
+  flex: 0 0 auto; padding: 3px 8px; font-size: 11px; color: var(--text-dim);
+  background: var(--bg-2); border-top: 1px solid var(--border);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fi-hint { padding: 12px 10px; color: var(--text-faint); font-size: 11.5px; line-height: 1.5; }
+.fi-hint b { color: var(--text-dim); font-weight: 600; }
+.gcanvas-wrap > canvas.tool-select { cursor: cell; }

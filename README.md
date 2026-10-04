@@ -31,7 +31,8 @@ other program holds the port, the server moves to the next free one and prints
 via the *serve: OpenCVS dev server* task and attach the debugger to the page
 (breakpoints in `js/app.js`), or open `index.html` over `file://` for a look at the
 markup only. `Ctrl+Shift+B` runs the serve task on its own, *test: metrology* runs
-the DOM-free half of the test suite.
+the DOM-free half of the test suite (metrology and XLD operators) and *test:
+features* the feature maths of the Feature Inspection window.
 
 ## Stepping through a program
 
@@ -75,6 +76,57 @@ the *last* execution: F5, F2 or a new program clears it, and a line whose text
 changed since it ran loses its time (the statement moved). The browser clock
 resolves 0.1 ms, so anything faster reads `<0.1 ms`. **Visualization ▸ Execution
 Times** switches the column off and on (the setting is kept in the layout).
+## Feature inspection
+
+**Visualization ▸ Feature Inspection** opens HDevelop's feature window: the shape,
+gray value and XLD features of *one* region element or *one* XLD contour — the
+numbers the limits of `select_shape` and `min_max_gray` are chosen from. The left
+half is the feature tree (*Region features*, *Gray value features*, *XLD features*,
+ticked feature by feature; each entry's tooltip names the HALCON operator and what
+the feature means), the right half is one row per ticked feature — its value and a
+gauge drawn from the feature's range. Which groups appear follows what is under
+inspection: an XLD contour has no shape or gray values, so only its own features
+are offered.
+
+**Pick** (or the select tool in the graphics toolbar of a window) switches the
+*active* graphics window to the select tool: the next click highlights the element
+under the cursor — a dashed box and a centre mark, drawn in the window it was
+picked in — and the title bar names it (`Feature Inspection — SelectedRegions[1]`),
+as does the small label next to the buttons. The window draws the highlight, not
+the Variable Window: HDevelop marks what is *displayed*, not what a list holds.
+Under the cursor counts what the window shows, the base image first and then the
+overlay variables from the top; a mask region counts as one element, a label region
+as the label the pixel carries. `select_shape` keeps the elements it selected, so
+clicking one of the *dropped* elements is refused instead of measuring a different
+one. An XLD contour is picked by the contour point nearest the cursor.
+
+Without a pick the window follows the Variable Window's selection, so stepping
+through a program and clicking a region variable in the list is the other way in
+(the status line then says "selected in the Variable Window" instead of naming the
+window the object came from).
+
+**Min/Max** prints the two ends of every gauge under its bar, and **double-clicking
+a bar** sets the range the bar is drawn with (Min = Max restores the default) — a
+value outside its range is drawn in the warning colour, which is what makes the
+window usable for picking a threshold rather than only for reading numbers.
+**Update** measures again (a region, its gray values or the element count change
+while the program runs) and **Clear** drops the selection. The status line under the
+tree names the object, its type, the window it was picked in, how many elements the
+variable has, and the pixels the gray value features were read from — always on the
+**base image of the window the object was picked in**, because a region has no gray
+values of its own; with no image behind the region they stay empty and the status
+line says so. Past a million pixels of an element the walk samples with a stride and
+the status line names it (`sampled 1/3`) instead of quietly measuring fewer pixels.
+
+The measurements themselves are **the interpreter's own**: they live in
+`js/features.js` (DOM-free, driven by `tools/test-features.js`) and `select_shape`
+asks `FeatureInspect.regionFeature` for every feature it selects on, so the window
+cannot show a value the operator would compute differently — `rectangularity` (area
+over the area of the bounding box) is available in both. A region whose bounding box
+is unknown still refuses the features that need it, with the same message as before.
+`test: features` in the Run and Debug dropdown runs the feature maths on
+hand-computed values, with no DOM and no browser.
+
 ## Procedure interfaces
 
 A procedure header carries its interface in HDevelop's own print form, so a

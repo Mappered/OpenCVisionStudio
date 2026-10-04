@@ -787,6 +787,15 @@ const state = {
   errorLine: null,            // { proc, line, text } of the line that stopped the run
   times: new Map(),           // proc -> [{ text, ms }] per line: the last execution's times
   showTimes: true,            // the gutter shows those times (Visualization ▸ Execution Times)
+  /* Feature Inspection window (Visualization ▸ Feature Inspection): the region
+     element or XLD contour picked in a graphics window, which features are
+     checked in the tree, and the gauge ranges the user has set. */
+  featInsp: {
+    name: null, id: 1, handle: null,
+    checked: new Set(['area', 'width', 'height', 'ratio', 'min', 'max', 'mean']),
+    ranges: new Map(),        // feature -> [min, max] of its gauge
+    minMax: false,            // the gauge shows its limits as text
+  },
   progFile: 'program.odev',   // file name of the current program (Open/Save Program)
   /* control flow of the structured statements: the program counter normally
      advances to the next executable line, but for/while/endfor/if/endif and
@@ -2606,6 +2615,7 @@ function gfxBodyHtml(bg) {
     <span class="tb-sep"></span>
     <button class="gt-btn active" data-tool="move" title="Move image (Alt: zoom out)"><svg viewBox="0 0 16 16"><path d="M8 1v14M1 8h14" stroke="currentColor"/><path d="M8 1L6 3m2-2l2 2M8 15l-2-2m2 2l2-2M1 8l2-2m-2 2l2 2M15 8l-2-2m2 2l-2 2" stroke="currentColor"/></svg></button>
     <button class="gt-btn" data-tool="zoom" title="Zoom image (left: in, right: out)"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor"/><path d="M11 11l4 4" stroke="currentColor"/><path d="M7 4.5v5M4.5 7h5" stroke="currentColor"/></svg></button>
+    <button class="gt-btn" data-tool="select" title="Select: click a region element or an XLD contour to inspect its features (Visualization ▸ Feature Inspection)"><svg viewBox="0 0 16 16"><path d="M3.5 1.5l8 7-3.6.5 2.2 3.8-1.6.9-2.2-3.8-2.8 3.1z" fill="none" stroke="currentColor" stroke-linejoin="round"/></svg></button>
     <span class="tb-sep"></span>
     <button class="gt-btn" data-gcmd="zoomout" title="Zoom out"><svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor"/><path d="M11 11l4 4" stroke="currentColor"/><path d="M4.5 7h5" stroke="currentColor"/></svg></button>
     <button class="gt-btn" data-gcmd="fit" title="Fit window"><svg viewBox="0 0 16 16"><path d="M1 5V1h4M15 5V1h-4M1 11v4h4M15 11v4h-4" fill="none" stroke="currentColor"/></svg></button>
@@ -2758,6 +2768,9 @@ function renderGraphics(G = gfxActive()) {
     if (rec && rec.kind !== 'image') paintObject(g2, rec, it.p || DEV_PARAMS, G);
   }
   if (G.metrology && G.showMetrology !== false) g2.drawImage(G.metrology, 0, 0);
+  // the element the Feature Inspection window measures
+  const fiHl = featHighlight(G);
+  if (fiHl) drawFeatHighlight(g2, G, fiHl);
   // profile line
   if (G.profileLine) {
     g2.strokeStyle = '#ffd54f'; g2.lineWidth = 1.5 / G.view.scale;
@@ -2928,8 +2941,11 @@ function wireGfxWindow(G) {
     G.tool = b.dataset.tool;
     G.canvas.classList.toggle('tool-zoom', G.tool === 'zoom');
     G.canvas.classList.toggle('tool-profile', G.tool === 'profile');
+    G.canvas.classList.toggle('tool-select', G.tool === 'select');
     const hint = $('.gtools-hint', el);
-    if (hint) hint.textContent = G.tool === 'profile' ? 'Drag a line in the image' : '';
+    if (hint) hint.textContent = G.tool === 'profile' ? 'Drag a line in the image'
+      : G.tool === 'select' ? 'Click a region or XLD contour to inspect it' : '';
+    if (typeof syncFeatPick === 'function') syncFeatPick();
   }));
 
   $$('.gt-btn[data-gcmd]', el).forEach(b => b.addEventListener('click', () => {
@@ -3005,6 +3021,16 @@ function gfxPointerDown(G, e) {
     G.drag = { kind: 'zoom', x0: p.cx, y0: p.cy, x1: p.cx, y1: p.cy, out: (e.button === 2 || e.altKey) };
   } else if (G.tool === 'profile') {
     G.drag = { kind: 'profile', x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+  } else if (G.tool === 'select') {
+    /* Feature Inspection: the click picks the region element / XLD contour it
+       lands on and stays there (no drag) */
+    const hit = featPickAt(G, p.x, p.y);
+    if (hit) {
+      setFeatureSelection(hit.name, hit.id, G.handle);
+      log(`Feature Inspection: ${hit.name}[${hit.id}] (${hit.rec.type || hit.rec.kind}) picked in window ${G.handle}.`, 'msg');
+    } else {
+      log('Feature Inspection: no region or XLD contour under the cursor.', 'msg');
+    }
   }
   G.canvas.setPointerCapture(e.pointerId);
 }
@@ -3849,6 +3875,7 @@ function syncUI() {
   paintThumbs();
   renderWatch();
   GFX.wins.forEach(g => drawPlot(g));
+  renderFeatureInspection();
   let bytes = 0;
   state.iconic.forEach(rec => {
     if (rec.mat) bytes += rec.mat.rows * rec.mat.cols;
@@ -4148,6 +4175,372 @@ function show3DPlot() {
 }
 
 /* ==========================================================================
+   FEATURE INSPECTION WINDOW (Visualization ▸ Feature Inspection)
+   --------------------------------------------------------------------------
+   HDevelop's Feature Inspection: pick ONE region element or ONE XLD contour in
+   a graphics window and read its shape, gray value and XLD features — the
+   numbers the thresholds of select_shape / min_max_gray are chosen from.
+
+   The measurements live in js/features.js (DOM-free, tools/test-features.js);
+   here live the window, the select tool of the graphics windows and the
+   highlight.  The gray value features are measured on the base image of the
+   window the object was picked in, because a region has no gray values of its
+   own.
+   ========================================================================== */
+const FI_IDS = { win: 'win-featureinsp', body: 'featinsp-body', where: 'featinsp-where',
+                 status: 'featinsp-status', title: 'featinsp-title' };
+/* the record kinds that hold regions: nothing else can be inspected */
+const FI_REGION_KINDS = new Set(['region', 'regions', 'selected']);
+
+const featInspWin = () => $('#' + FI_IDS.win);
+function featInspVisible() { const w = featInspWin(); return !!w && winVisible(w); }
+
+/* What is being inspected.  Without a pick the Variable Window's selection is
+   inspected instead — HDevelop lets the variable list drive this window, and
+   while stepping through a program that is the useful mode. */
+function featTarget() {
+  const f = state.featInsp;
+  let name = f.name, id = f.id, handle = f.handle, picked = true;
+  if (!name) {
+    const sel = state.selectedVar;
+    if (sel && state.iconic.has(sel)) { name = sel; id = 1; handle = null; picked = false; }
+  }
+  if (!name) return null;
+  const rec = state.iconic.get(name) || null;
+  const measurable = !!rec && (FI_REGION_KINDS.has(rec.kind) || rec.kind === 'xld');
+  return { name, id: Math.max(1, id | 0), handle, picked, rec, measurable };
+}
+
+/* the gray plane a region is measured on: the base image of the graphics window
+   the object was picked in */
+function featPlane() {
+  const G = GFX.wins.get(state.featInsp.handle) || gfxActive();
+  const name = G && G.base;
+  const rec = name ? state.iconic.get(name) : null;
+  if (!rec) return null;
+  const m = rec.mat;
+  if (m && (!m.channels || m.channels() === 1)) return { gray: m.data, W: m.cols, H: m.rows, image: name };
+  if (rec.gray && rec.gray.length) {
+    const W = m ? m.cols : (rec.canvas ? rec.canvas.width : 0);
+    const H = m ? m.rows : (rec.canvas ? rec.canvas.height : 0);
+    if (W && H) return { gray: rec.gray, W, H, image: name };
+  }
+  return null;
+}
+
+/* Every feature of the current target, measured once per render.  Region
+   elements are keyed by the id the value arrays of the record are indexed with
+   — the label id of a label image, 1 for a mask region — which is what
+   regionFeatures/labelBoxes fill in. */
+function featMeasure() {
+  const t = featTarget();
+  const out = { group: 'region', vals: {}, note: '', count: 0, gray: null, id: 1 };
+  if (!t || !t.rec || !t.measurable) return out;
+  if (t.rec.kind === 'xld') {
+    const conts = t.rec.xld || [];
+    out.group = 'xld';
+    out.count = conts.length;
+    out.id = Math.min(t.id, Math.max(1, conts.length));
+    out.vals = FeatureInspect.xldValues(conts[out.id - 1]) || {};
+    out.note = `${conts.length} contour${conts.length === 1 ? '' : 's'}`;
+    return out;
+  }
+  const regs = regionFeatures(t.rec);
+  const boxes = labelBoxes(regs);
+  const box = (boxes && boxes[t.id]) || null;
+  const area = regs.areas ? regs.areas[t.id] : NaN;
+  const cent = (regs.cents && regs.cents[t.id]) || null;
+  out.count = regs.count || 1;
+  out.id = t.id;
+  for (const n of FeatureInspect.names('region')) {
+    out.vals[n] = FeatureInspect.regionFeature(box, area, cent, n);
+  }
+  if (!box) out.note = 'no bounding box for this element';
+  const plane = featPlane();
+  const g = plane ? FeatureInspect.grayStats(plane, t.rec, t.id, box) : null;
+  if (g) {
+    out.vals.min = g.min; out.vals.max = g.max; out.vals.mean = g.mean; out.vals.deviation = g.deviation;
+    out.gray = `${g.count}${g.step > 1 ? ` of ${Math.round(area)}` : ''} px`
+      + (g.step > 1 ? ` (sampled 1/${g.step})` : '');
+    out.plane = plane.image;
+  }
+  return out;
+}
+
+/* the features the window offers for the current target: regions have shape and
+   gray value features, XLD contours only their own */
+function featGroups(t) {
+  if (t && t.rec && t.measurable) return t.rec.kind === 'xld' ? ['xld'] : ['region', 'gray'];
+  return ['region', 'gray', 'xld'];
+}
+
+function renderFeatureInspection() {
+  const body = $('#' + FI_IDS.body);
+  if (!body) return;
+  const f = state.featInsp, t = featTarget(), m = featMeasure();
+  const off = !t || !t.measurable;
+  const groups = featGroups(t);
+  const label = t ? `${t.name}[${t.id}]` : '';
+
+  const title = $('#' + FI_IDS.title), where = $('#' + FI_IDS.where), status = $('#' + FI_IDS.status);
+  if (title) title.textContent = off ? 'Feature Inspection' : `Feature Inspection — ${label}`;
+  if (where) where.textContent = off ? '–' : label;
+
+  const tree = groups.map(gid => {
+    const g = FeatureInspect.group(gid);
+    return `<div class="fi-group" title="${esc(g.note)}">${esc(g.title)}</div>` + g.items.map(([name, op, desc]) =>
+      `<label class="fi-item${off ? ' off' : ''}" title="${esc(op)} — ${esc(desc)}">` +
+      `<input type="checkbox" data-feat="${name}"${f.checked.has(name) ? ' checked' : ''}${off ? ' disabled' : ''}>` +
+      `<span>${esc(name)}</span></label>`).join('');
+  }).join('');
+
+  const rows = groups.map(gid => {
+    const g = FeatureInspect.group(gid);
+    const items = g.items.filter(it => f.checked.has(it[0]) && m.vals[it[0]] !== undefined);
+    if (!items.length) return '';
+    return `<div class="fi-group">${esc(g.title)}</div>` + items.map(([name, op, desc]) => {
+      const v = m.vals[name];
+      const rng = f.ranges.get(name) || FeatureInspect.defaultRange(name, v);
+      const frac = FeatureInspect.gaugeFraction(v, rng[0], rng[1]);
+      const outside = Number.isFinite(v) && (v < rng[0] || v > rng[1]);
+      return `<div class="fi-row" title="${esc(op)} — ${esc(desc)}&#10;Double-click the bar to set its range">` +
+        `<div class="fi-row-head"><span class="fi-name">${esc(name)}</span>` +
+        `<span class="fi-val">${esc(FeatureInspect.format(v))}</span></div>` +
+        `<div class="fi-gauge${outside ? ' off' : ''}" data-feat="${name}">` +
+        `<div class="fi-fill" style="width:${(frac * 100).toFixed(1)}%"></div></div>` +
+        (f.minMax ? `<div class="fi-scale"><span>${esc(FeatureInspect.format(rng[0]))}</span>` +
+          `<span>${esc(FeatureInspect.format(rng[1]))}</span></div>` : '') +
+        '</div>';
+    }).join('');
+  }).join('');
+
+  const hint = !t
+    ? '<div class="fi-hint"><b>Nothing inspected yet.</b><br>Click <b>Pick</b> and then a region element or an XLD contour in a graphics window &mdash; or select a variable in the Variable Window.</div>'
+    : !t.rec
+      ? `<div class="fi-hint">The variable <b>${esc(t.name)}</b> is undefined. Run the program to give it a value.</div>`
+      : !t.measurable
+        ? `<div class="fi-hint"><b>${esc(t.name)}</b> is a ${esc(String(t.rec.kind))}: only regions and XLD contours have features.</div>`
+        : '<div class="fi-hint">Tick a feature on the left to measure it.</div>';
+  body.innerHTML = `<div class="fi-tree">${tree}</div>` +
+    `<div class="fi-values">${rows || hint}</div>`;
+
+  if (status) {
+    const parts = [];
+    if (!off) {
+      parts.push(`${label} — ${t.rec.type || t.rec.kind}`);
+      parts.push(t.picked ? `picked in window ${state.featInsp.handle || 1}` : 'selected in the Variable Window');
+      if (m.note) parts.push(m.note);
+      if (m.gray) parts.push(`gray: ${m.gray}${m.plane ? ` on '${m.plane}'` : ''}`);
+      else if (m.group === 'region') parts.push('no image behind the region — gray value features unavailable');
+      if (m.count > 1) parts.push(`${m.count} elements`);
+    } else parts.push('Nothing measured');
+    status.textContent = parts.join(' · ');
+  }
+}
+
+/* HDevelop's gauge context menu ("set range"): double-clicking a bar opens it.
+   Min = Max goes back to the range the feature is shown with by default. */
+function editFeatRange(name) {
+  const f = state.featInsp, m = featMeasure();
+  const rng = f.ranges.get(name) || FeatureInspect.defaultRange(name, m.vals[name]);
+  showModal(`Range of '${name}'`, `
+    <p class="dim">The gauge of <b>${esc(name)}</b> is drawn from <i>Min</i> to <i>Max</i>.
+    The measured value is not affected &mdash; only the bar is scaled.</p>
+    <p><label>Min <input id="fi-range-lo" type="number" step="any" value="${rng[0]}"></label>
+    &nbsp; <label>Max <input id="fi-range-hi" type="number" step="any" value="${rng[1]}"></label></p>
+    <p class="dim">Set Min = Max to use the default range again.</p>`);
+  const ok = $('#modal-ok');
+  ok.onclick = () => {
+    const lo = Number($('#fi-range-lo').value), hi = Number($('#fi-range-hi').value);
+    if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) f.ranges.set(name, [lo, hi]);
+    else f.ranges.delete(name);
+    closeModal();
+    renderFeatureInspection();
+  };
+}
+
+function showFeatureInspection(on) {
+  const w = featInspWin();
+  if (!w) return;
+  if (on) { if (!winVisible(w)) wmRestore(FI_IDS.win); }
+  else w.classList.add('hidden-win');
+  syncFeatMenu();
+  updateSplitters();
+  renderTaskbar();
+  resizeGraphics();
+}
+function toggleFeatureInspection() { showFeatureInspection(!featInspVisible()); }
+
+/* the Visualization ▸ Feature Inspection check follows its window */
+function syncFeatMenu() {
+  const w = featInspWin(), li = $('#menu-featinsp');
+  if (w && li) li.classList.toggle('checked', winVisible(w));
+}
+
+/* ---------------- the select tool of the graphics windows ---------------- */
+
+/* Which element of a record lies at an image point?  A mask region has exactly
+   one element, a label region the label the pixel carries (if the record kept
+   it — select_shape drops the others), an XLD record the contour whose points
+   come closest to the cursor. */
+function featHitId(rec, x, y, scale) {
+  const r = Math.round(y), c = Math.round(x);
+  if (rec.kind === 'xld') {
+    const tol = Math.max(3, 6 / (scale || 1));
+    let best = null, bestD = Infinity;
+    (rec.xld || []).forEach((cont, k) => {
+      for (let i = 0; i < cont.x.length; i++) {
+        const d = Math.hypot(cont.x[i] - x, cont.y[i] - y);
+        if (d < bestD) { bestD = d; best = k + 1; }
+      }
+    });
+    return best !== null && bestD <= tol ? best : null;
+  }
+  const m = rec.mat;
+  const W = rec.labels ? rec.w : (m ? m.cols : 0);
+  const H = rec.labels ? rec.h : (m ? m.rows : 0);
+  if (!W || !H || r < 0 || c < 0 || r >= H || c >= W) return null;
+  if (rec.labels) {
+    const id = rec.labels[r * W + c];
+    if (!id) return null;
+    if (rec.ids && rec.ids.length && !rec.ids.includes(id)) return null;
+    return id;
+  }
+  if (m && m.data && m.data[r * W + c]) return 1;
+  return null;
+}
+
+/* the topmost region / XLD contour under the cursor of a graphics window */
+function featPickAt(G, x, y) {
+  const names = [];
+  if (G.base) names.push(G.base);
+  for (const it of G.items) if (it.name && !it.msg && !it.prim) names.push(it.name);
+  for (let i = names.length - 1; i >= 0; i--) {
+    const rec = state.iconic.get(names[i]);
+    if (!rec || !(FI_REGION_KINDS.has(rec.kind) || rec.kind === 'xld')) continue;
+    const id = featHitId(rec, x, y, G.view.scale);
+    if (id) return { name: names[i], id, rec };
+  }
+  return null;
+}
+
+function setFeatureSelection(name, id, handle) {
+  const f = state.featInsp;
+  f.name = name || null;
+  f.id = Math.max(1, id | 0);
+  f.handle = f.name ? (handle === undefined ? null : handle) : null;
+  if (f.name) showFeatureInspection(true);
+  else syncFeatMenu();
+  renderFeatureInspection();
+  GFX.wins.forEach(g => renderGraphics(g));     // the highlight follows the pick
+}
+
+/* the highlight is drawn in the window the object was picked in (the Variable
+   Window adds no highlight: HDevelop marks what is displayed, not what is
+   selected in a list) */
+function featHighlight(G) {
+  const f = state.featInsp;
+  if (!f.name) return null;
+  const t = featTarget();
+  if (!t || !t.measurable) return null;
+  if (f.handle && f.handle !== G.handle) return null;
+  if (!(G.base === f.name || G.items.some(it => it.name === f.name && !it.msg))) return null;
+  return t;
+}
+
+/* dashed box + centre mark around the inspected element, in image coordinates */
+function drawFeatHighlight(g2, G, t) {
+  const rec = t.rec, s = G.view.scale || 1;
+  let box = null, cc = null;
+  if (rec.kind === 'xld') {
+    const conts = rec.xld || [];
+    const v = FeatureInspect.xldValues(conts[Math.min(t.id, Math.max(1, conts.length)) - 1]);
+    if (v) { box = [v.row1, v.column1, v.row2, v.column2]; cc = [v.column, v.row]; }
+  } else {
+    const regs = regionFeatures(rec);
+    const boxes = labelBoxes(regs);
+    box = (boxes && boxes[t.id]) || null;
+    const cent = regs.cents && regs.cents[t.id];
+    if (cent) cc = cent;
+  }
+  if (!box) return;
+  g2.save();
+  g2.strokeStyle = '#ff9f1a';
+  g2.lineWidth = 1.5 / s;
+  g2.setLineDash([5 / s, 3 / s]);
+  g2.strokeRect(box[1], box[0], box[3] - box[1] + 1, box[2] - box[0] + 1);
+  g2.setLineDash([]);
+  if (cc) {
+    g2.beginPath();
+    g2.arc(cc[0], cc[1], 3 / s, 0, Math.PI * 2);
+    g2.fillStyle = 'rgba(255,159,26,.85)';
+    g2.fill();
+  }
+  g2.restore();
+}
+
+/* ---------------- the panel ---------------- */
+
+/* Pick switches the ACTIVE graphics window to the select tool; the button shows
+   the state of that window, so it also follows the graphics toolbar. */
+function syncFeatPick() {
+  const b = $('#fi-pick'), G = gfxActive();
+  if (!b) return;
+  b.classList.toggle('on', !!G && G.tool === 'select');
+}
+
+function wireFeatureInspection() {
+  const body = $('#' + FI_IDS.body);
+  if (!body) return;
+
+  $('#fi-pick')?.addEventListener('click', () => {
+    const G = gfxActive();
+    if (!G) return;
+    G.tool = G.tool === 'select' ? 'move' : 'select';
+    G.canvas.classList.toggle('tool-select', G.tool === 'select');
+    const hint = $('.gtools-hint', G.el);
+    if (hint) hint.textContent = G.tool === 'select' ? 'Click a region or XLD contour to inspect it' : '';
+    $$('.gt-btn[data-tool]', G.el).forEach(b => b.classList.toggle('active', b.dataset.tool === G.tool));
+    syncFeatPick();
+    log(G.tool === 'select'
+      ? `Pick: click a region element or an XLD contour in window ${G.handle}.`
+      : 'Pick off.', 'msg');
+  });
+
+  $('#fi-minmax')?.addEventListener('click', e => {
+    const f = state.featInsp;
+    f.minMax = !f.minMax;
+    e.currentTarget.classList.toggle('on', f.minMax);
+    renderFeatureInspection();
+  });
+
+  $('#fi-update')?.addEventListener('click', () => {
+    renderFeatureInspection();
+    GFX.wins.forEach(g => renderGraphics(g));
+  });
+
+  $('#fi-clear')?.addEventListener('click', () => {
+    setFeatureSelection(null);
+    log('Feature Inspection cleared.', 'msg');
+  });
+
+  /* the feature tree: ticking a feature adds its row and its gauge */
+  body.addEventListener('change', e => {
+    const cb = e.target.closest('input[data-feat]');
+    if (!cb) return;
+    const name = cb.dataset.feat, f = state.featInsp;
+    if (cb.checked) f.checked.add(name); else f.checked.delete(name);
+    renderFeatureInspection();
+  });
+
+  /* the gauges: a double click sets the range they are drawn with */
+  body.addEventListener('dblclick', e => {
+    const g = e.target.closest('.fi-gauge[data-feat]');
+    if (g) editFeatRange(g.dataset.feat);
+  });
+}
+
+/* ==========================================================================
    MODAL
    ========================================================================== */
 function showModal(title, html) {
@@ -4199,6 +4592,7 @@ const CMD = {
   },
   opdialog() { openOperatorDialog(); },
   times() { setShowTimes(!state.showTimes); },
+  featinspect() { toggleFeatureInspection(); },
   resetlayout() { resetLayout(); },
   cascade() { wmCascade(); },
   tileh() { wmTile(true); },
@@ -4246,7 +4640,7 @@ $('#modal-overlay').addEventListener('click', e => { if (e.target.id === 'modal-
 /* ==========================================================================
    WINDOW MANAGER (floating / drag / resize / taskbar / cascade / tile)
    ========================================================================== */
-const WIN_IDS = { program: 'win-program', operator: 'win-operator', graphics: 'win-graphics', variable: 'win-variable', history: 'win-history' };
+const WIN_IDS = { program: 'win-program', operator: 'win-operator', graphics: 'win-graphics', variable: 'win-variable', featureinsp: 'win-featureinsp', history: 'win-history' };
 const WM = { z: 60, recs: {} };
 
 const wmRow = () => $('#wm-row');
@@ -4411,14 +4805,20 @@ function renderTaskbar() {
   const bar = $('#wm-taskbar');
   const gfxIds = [...GFX.wins.values()].filter(g => g.spawned).map(g => g.winId);
   const ids = [...Object.values(WIN_IDS), ...gfxIds];
+  /* The Feature Inspection title bar names the object being inspected
+     ("Feature Inspection — Regions[3]"), which is far too long for a taskbar
+     button — its button keeps the plain window name. */
+  const FIXED = { 'win-featureinsp': 'Feature Inspection' };
   bar.innerHTML = ids.map(id => {
     const win = $('#' + id);
     const vis = winVisible(win);
+    const label = FIXED[id] || $('.title', win).textContent;
     return `<button class="wm-task-btn ${vis ? 'visible' : ''}" data-winid="${id}">` +
-           `<span class="tb-icon win"></span><span class="wm-task-label">${$('.title', win).textContent}</span></button>`;
+           `<span class="tb-icon win"></span><span class="wm-task-label">${label}</span></button>`;
   }).join('');
   $$('.wm-task-btn', bar).forEach(b =>
     b.addEventListener('click', () => wmTaskbarToggle(b.dataset.winid)));
+  syncFeatMenu();          // Visualization ▸ Feature Inspection follows its window
   scheduleSave();
 }
 
@@ -4515,9 +4915,15 @@ function resetLayout() {
     wmGoHome(w);
   });
   $$('#menu-window-list li[data-win]').forEach(li => li.classList.add('checked'));
-  ['col-left', 'col-right'].forEach(id => { $('#' + id).style.flexBasis = ''; });
-  $('#win-program').style.flexBasis = '';
-  $('#win-history').style.flexBasis = '';
+  ['col-left', 'col-center', 'col-right'].forEach(id => { $('#' + id).style.flexBasis = ''; });
+  /* a divider hands pixel sizes (and grow factors) to both of the windows it
+     sits between while it is dragged, so every one of them is given back here */
+  ['#win-program', '#win-operator', '#win-history', '#win-variable', '#' + FI_IDS.win]
+    .forEach(s => {
+      const w = $(s);
+      w.style.flexBasis = '';
+      w.style.flexGrow = '';
+    });
   WM.z = 60;
   renderTaskbar();
   updateSplitters();
@@ -4574,6 +4980,10 @@ function saveLayout() {
         right: $('#col-right').style.flexBasis,
         program: $('#win-program').style.flexBasis,
         history: $('#win-history').style.flexBasis,
+        /* the Variable / Feature Inspection split is a pair of bases, so both
+           sides are stored to bring the divider back where it was left */
+        variable: $('#win-variable').style.flexBasis,
+        featureinsp: $('#' + FI_IDS.win).style.flexBasis,
       },
       breakpoints: [...state.breakpoints],
       proc: state.proc,
@@ -4604,6 +5014,8 @@ function loadLayout() {
     if (L.cols.right) $('#col-right').style.flexBasis = L.cols.right;
     if (L.cols.program) $('#win-program').style.flexBasis = L.cols.program;
     if (L.cols.history) $('#win-history').style.flexBasis = L.cols.history;
+    if (L.cols.variable) $('#win-variable').style.flexBasis = L.cols.variable;
+    if (L.cols.featureinsp) $('#' + FI_IDS.win).style.flexBasis = L.cols.featureinsp;
   }
   if (L.wins) Object.entries(L.wins).forEach(([id, s]) => {
     const w = $('#' + id);
@@ -4670,35 +5082,88 @@ function loadLayout() {
 }
 
 /* ---------------- splitters ---------------- */
+/* A divider sits between two flex items that both grow: the two columns next to
+   the centre column, the Program / Operator pair and the Variable / Feature
+   Inspection pair. Handing one of them a new flex-basis alone lets the two share
+   the free space again, so the divider runs away from the mouse (a 100 px drag
+   moved it by ~225 px). Pin both sides to a pixel size (grow 0) while dragging
+   and give the grow factors back on release, so the pair behaves like one
+   resizable panel. */
+function wmDragPair(a, b, a0, b0, d, minA, minB, maxA) {
+  if (!a || !b || a === b || a.parentElement !== b.parentElement) return null;
+  if (b.classList.contains('hidden-win') || getComputedStyle(b).position === 'absolute') return null;
+  const lo = minA - a0, hi = Math.min(maxA - a0, b0 - minB);
+  if (hi < lo) return null;                        // no room left for both minima
+  const dd = Math.max(lo, Math.min(hi, d));
+  wmPinSize(a, a0 + dd);
+  wmPinSize(b, b0 - dd);
+  return [a, b];
+}
+/* give an item a pixel size and take its grow factor away for the duration of
+   the drag (so it cannot take a share of the free space and drift) */
+function wmPinSize(el, size) {
+  el.style.flexGrow = '0';
+  el.style.flexBasis = size + 'px';
+}
+function wmReleasePinned(els) {
+  els.forEach(el => { el.style.flexGrow = ''; });
+}
+
 $$('.splitter').forEach(sp => {
   sp.addEventListener('pointerdown', e => {
     e.preventDefault();
     sp.classList.add('dragging');
-    sp.setPointerCapture(e.pointerId);
+    /* capture is a nicety (the pointer may leave the 4 px strip); it throws when
+       the pointer is already gone, and that must not break the drag */
+    try { sp.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
     const kind = sp.dataset.split;
     const start = { x: e.clientX, y: e.clientY };
-    const left = $('#col-left'), right = $('#col-right');
-    const prog = $('#win-program'), hist = $('#win-history');
+    const left = $('#col-left'), right = $('#col-right'), center = $('#col-center');
+    const prog = $('#win-program'), oper = $('#win-operator'), hist = $('#win-history');
+    const vars = $('#win-variable'), fi = $('#' + FI_IDS.win);
     const l0 = left.getBoundingClientRect().width;
+    const c0 = center.getBoundingClientRect().width;
     const r0 = right.getBoundingClientRect().width;
-    const p0 = prog.getBoundingClientRect().height;
+    const p0 = prog.classList.contains('hidden-win') ? 0 : prog.getBoundingClientRect().height;
+    const o0 = oper.classList.contains('hidden-win') ? 0 : oper.getBoundingClientRect().height;
     const h0 = hist.getBoundingClientRect().height;
+    const v0 = vars.classList.contains('hidden-win') ? 0 : vars.getBoundingClientRect().height;
+    const f0 = fi && !fi.classList.contains('hidden-win') ? fi.getBoundingClientRect().height : 0;
+    let pinned = [];
     const move = ev => {
       const dx = ev.clientX - start.x, dy = ev.clientY - start.y;
-      if (kind === 'left')       left.style.flexBasis  = Math.min(700, Math.max(220, l0 + dx)) + 'px';
-      if (kind === 'right')      right.style.flexBasis = Math.min(500, Math.max(180, r0 - dx)) + 'px';
-      if (kind === 'left-v')     prog.style.flexBasis  = Math.min(600, Math.max(120, p0 + dy)) + 'px';
-      if (kind === 'center-v')   hist.style.flexBasis  = Math.min(400, Math.max(90,  h0 - dy)) + 'px';
+      let pair = null;
+      if (kind === 'left')    pair = wmDragPair(left, center, l0, c0, dx, 220, 240, 700);
+      if (kind === 'right')   pair = wmDragPair(right, center, r0, c0, -dx, 180, 240, 500);
+      if (kind === 'left-v')  pair = wmDragPair(prog, oper, p0, o0, dy, 120, 100, 600);
+      if (kind === 'right-v') pair = wmDragPair(vars, fi, v0, f0, dy, 60, 90, 900);
+      if (pair) {
+        /* the two columns next to the centre column sit in a row of three, so
+           the third one has to hold its size as well */
+        if (kind === 'left')  { wmPinSize(right, r0); pair.push(right); }
+        if (kind === 'right') { wmPinSize(left, l0);  pair.push(left); }
+        pinned = pair;
+      } else {                 // the neighbour is hidden, stacked or a floating window
+        if (kind === 'left')    left.style.flexBasis  = Math.min(700, Math.max(220, l0 + dx)) + 'px';
+        if (kind === 'right')   right.style.flexBasis = Math.min(500, Math.max(180, r0 - dx)) + 'px';
+        if (kind === 'left-v')  prog.style.flexBasis  = Math.min(600, Math.max(120, p0 + dy)) + 'px';
+        if (kind === 'right-v') vars.style.flexBasis  = Math.min(900, Math.max(60,  v0 + dy)) + 'px';
+      }
+      if (kind === 'center-v') hist.style.flexBasis = Math.min(400, Math.max(90, h0 - dy)) + 'px';
       resizeGraphics();
     };
     const up = () => {
       sp.classList.remove('dragging');
       sp.removeEventListener('pointermove', move);
       sp.removeEventListener('pointerup', up);
+      sp.removeEventListener('pointercancel', up);
+      wmReleasePinned(pinned);
+      pinned = [];
       scheduleSave();
     };
     sp.addEventListener('pointermove', move);
     sp.addEventListener('pointerup', up);
+    sp.addEventListener('pointercancel', up);
   });
 });
 
@@ -6001,6 +6466,8 @@ function init() {
   renderVariables();
   renderHistory();
   renderTaskbar();
+  wireFeatureInspection();
+  renderFeatureInspection();
   probePageFolder();
   setFitChecked(mainGfx, true);
   resizeGraphics();
@@ -6017,7 +6484,8 @@ const WIN_HOME = {
   'win-operator': { col: 'col-left',   after:  'sp-left-v' },
   'win-graphics': { col: 'col-center', before: 'sp-center-v' },
   'win-history':  { col: 'col-center', after:  'sp-center-v' },
-  'win-variable': { col: 'col-right',  before: null },
+  'win-variable': { col: 'col-right',  before: 'sp-right-v' },
+  'win-featureinsp': { col: 'col-right', after: 'sp-right-v' },
 };
 function wmGoHome(win) {
   const h = WIN_HOME[win.id];

@@ -1158,27 +1158,21 @@ function labelBoxes(regs) {
   return (regs._boxes = box);
 }
 
-/* one region feature of select_shape, with the meaning it has in HALCON */
+/* one region feature of select_shape, with the meaning it has in HALCON.  The
+   values come from js/features.js: the Feature Inspection window shows exactly
+   the features select_shape selects on, so the two must not drift apart.  A
+   feature that needs the bounding box of the element (width, ratio, …) still
+   refuses to answer when the region array does not know it. */
 function shapeFeature(regs, boxes, id, name) {
   const f = String(name === undefined || name === null ? '' : name).trim().replace(/^'(.*)'$/s, '$1').toLowerCase();
   const box = boxes && boxes[id];
-  const need = () => { throw new Error(`select_shape: '${f}' needs the region array of connection()`); };
-  const wdt = () => (box ? box[3] - box[1] + 1 : need());
-  const hgt = () => (box ? box[2] - box[0] + 1 : need());
-  switch (f) {
-    case 'area':    return regs.areas[id];
-    case 'row':     return regs.cents[id][1];
-    case 'column':  return regs.cents[id][0];
-    case 'row1':    return box ? box[0] : need();
-    case 'row2':    return box ? box[2] : need();
-    case 'column1': return box ? box[1] : need();
-    case 'column2': return box ? box[3] : need();
-    case 'width':   return wdt();
-    case 'height':  return hgt();
-    case 'ratio': { const h = hgt(); return h ? wdt() / h : 0; }
-    default:
-      throw new Error(`select_shape: feature '${f}' is not implemented in this build`);
+  if (typeof FeatureInspect !== 'undefined' && FeatureInspect.REGION_NAMES.includes(f)) {
+    if (!box && FeatureInspect.BOX_FEATURES.has(f)) {
+      throw new Error(`select_shape: '${f}' needs the region array of connection()`);
+    }
+    return FeatureInspect.regionFeature(box, regs.areas[id], regs.cents[id], f);
   }
+  throw new Error(`select_shape: feature '${f}' is not implemented in this build`);
 }
 
 function registerImageSource(name, canvas, builtin) {

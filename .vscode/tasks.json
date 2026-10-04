@@ -37,6 +37,17 @@
             "group": "test",
             "presentation": { "reveal": "always", "panel": "shared", "clear": true },
             "problemMatcher": []
+        },
+        {
+            "label": "test: features",
+            "detail": "tools/test-features.js — the feature maths of the Feature Inspection window (js/features.js), shared with select_shape",
+            "type": "shell",
+            "command": "${workspaceFolder}\\tools\\node\\node.exe",
+            "args": ["${workspaceFolder}\\tools\\test-features.js"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "test",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+            "problemMatcher": []
         }
     ]
 }

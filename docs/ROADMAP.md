@@ -187,6 +187,22 @@ does the same for a live publisher, `run-stop.cmd` undoes it.
 | M11 | Media Foundation webcam backend. Step 0 is a CI probe: prove MinGW's MF headers and import libraries actually build and link something that enumerates devices | enumeration and pixel-format conversion covered in CI; frame capture verified on a machine with a webcam, since runners have none |
 | M12 | Aravis to webcam: user-mode virtual camera. API reached by dynamic resolution (headers predate it), media source implemented and published | CI-proven: Aravis to frame bus to a second process, live and continuously, at 640x480 RGB32; and the frame server walking the whole media-source contract without a fault. Outstanding: one elevated run on a Windows 11 client to see the camera appear - blocked on machine-wide registration, not on code. Kit: `artifacts:vcam/0.1.0/win-x64/` |
 
+### IDE windows delivered in the browser build
+
+The milestones above are the Electron product. The browser IDE (`index.html` +
+`js/`) is where the window behaviour is settled first, and these are in it today:
+
+| Window | State |
+|---|---|
+| Program / Operator / Graphics / Variable / History | implemented (see `README.md`) |
+| Execution Times (Visualization menu) | implemented — per-line times, summed over a run, subtracted refresh cost |
+| **Feature Inspection** (Visualization menu) | implemented — shape, gray value and XLD features of a picked region element or XLD contour, gauges with settable ranges, select tool in the graphics window, highlight in the window the object was picked in. The maths lives in `js/features.js`, is shared with `select_shape` (including `rectangularity`) and is covered by `tools/test-features.js` |
+| Metrology / XLD operators | partially implemented (`js/metrology.js`, `tools/test-metrology.js`) |
+
+The rule this window settled: a measurement the IDE draws and a measurement the
+interpreter computes are one function, not two. A feature the window shows but
+`select_shape` cannot select on (or the other way round) is a bug by definition.
+
 ## Aravis integration
 
 Vendored version: 0.9.3, API `aravis-0.10`, meson build. Dependencies:

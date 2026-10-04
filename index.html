@@ -57,6 +57,7 @@
         <ul class="dropdown">
           <li class="check checked locked">Dark Mode</li>
           <li class="check checked" id="menu-times" data-cmd="times">Execution Times</li>
+          <li class="check" id="menu-featinsp" data-cmd="featinspect">Feature Inspection</li>
           <li class="sep"></li>
           <li class="disabled">Iconic Variables: Medium</li>
           <li class="disabled">Graphics Window: Fit</li>
@@ -69,6 +70,7 @@
           <li class="check checked" data-win="operator">Operator Window</li>
           <li class="check checked" data-win="graphics">Graphics Window</li>
           <li class="check checked" data-win="variable">Variable Window</li>
+          <li class="check" data-win="featureinsp">Feature Inspection</li>
           <li class="check checked" data-win="history">History</li>
           <li class="sep"></li>
           <li data-cmd="cascade">Cascade Windows</li>
@@ -226,6 +228,30 @@
       <div class="vw-watchlist hidden" id="vw-watchlist" title="Watched variables — click to locate, double-click to unwatch"></div>
       <div class="window-body" id="variable-body"></div>
     </div>
+
+    <div class="splitter splitter-h" data-split="right-v" id="sp-right-v"></div>
+
+    <!-- Feature Inspection: the shape / gray value / XLD features of a single
+         region element or XLD contour, picked in the graphics window.  The
+         panes are filled by js/app.js (renderFeatureInspection).  Hidden until
+         Visualization ▸ Feature Inspection (or a pick) asks for it. -->
+    <div class="window hidden-win" id="win-featureinsp">
+      <div class="titlebar">
+        <span class="tb-icon win"></span><span class="title" id="featinsp-title">Feature Inspection</span>
+        <span class="titlebar-btns"><button class="wbtn min"></button><button class="wbtn max"></button><button class="wbtn float" title="Float / Dock"><svg viewBox="0 0 12 12"><rect x="1" y="4.5" width="6.5" height="6.5" fill="none" stroke="currentColor" stroke-width="1.1"/><path d="M4.5 4.5V1.5H11M11 1.5L7.5 5" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></button><button class="wbtn close"></button></span>
+      </div>
+      <div class="window-body">
+        <div class="fi-bar">
+          <button class="vw-btn" id="fi-pick" title="Select tool: the next click in a graphics window inspects the region element or XLD contour under the cursor">Pick</button>
+          <button class="vw-btn" id="fi-minmax" title="Show the minimum and maximum of every gauge">Min/Max</button>
+          <button class="vw-btn" id="fi-update" title="Measure the inspected object again (regions and gray values change while the program runs)">Update</button>
+          <button class="vw-btn" id="fi-clear" title="Clear the selection">Clear</button>
+          <span class="fi-where" id="featinsp-where" title="Object under inspection">&ndash;</span>
+        </div>
+        <div class="fi-split" id="featinsp-body"></div>
+        <div class="fi-status" id="featinsp-status">Nothing selected</div>
+      </div>
+    </div>
   </section>
  </div><!-- /wm-row -->
  <div id="wm-taskbar"></div>
@@ -252,6 +278,7 @@
 
 <script src="vendor/opencv.js"></script>
 <script src="vendor/monaco/vs/loader.js"></script>
+<script src="js/features.js"></script>
 <script src="js/opencv_ops.js"></script>
 <script src="js/metrology.js"></script>
 <script src="js/app.js"></script>
