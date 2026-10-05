@@ -7,9 +7,10 @@
 const $  = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-/* Time a history entry costs (log -> renderHistory rebuilds the window and
-   scrolls it: several milliseconds).  The execution times ask for the work a
-   line did, so they subtract it — see "execution times" further down. */
+/* Time a history entry costs (log appends one row and scrolls the window: a few
+   hundred microseconds — rebuilding the whole list for every line was what made
+   it milliseconds).  The execution times ask for the work a line did, so they
+   subtract it — see "execution times" further down. */
 let logCost = 0;
 /* operators that draw into a graphics window instead of computing a result:
    HALCON's dev_* settings/drawing operators and the disp_* primitives */
@@ -1369,23 +1370,50 @@ function buildChipImage() {
    ========================================================================== */
 const now = () => new Date().toLocaleTimeString('en-GB', { hour12: false });
 
+/* How many lines the History window keeps.  A program that reads a folder logs
+   a few lines per file, so a long run pushed thousands of rows into the list —
+   and every one of them was rendered again from scratch for every new line,
+   which is O(n²) DOM work that ends up costing more than the program itself.
+   The list is capped, and a line is appended instead of rebuilding the list. */
+const HISTORY_MAX = 1000;
+
+const histRow = h => `<div class="hist-row ${h.kind}"><span class="t">${h.t}</span>${esc(h.text)}</div>`;
+let histDirty = true;          // the list must be rebuilt (tab switch, first line)
+
 function log(text, kind) {
   const t = performance.now();          // the entry is bookkeeping, not execution
-  state.history.push({ t: now(), kind: kind || 'msg', text });
-  renderHistory();
+  const h = { t: now(), kind: kind || 'msg', text };
+  state.history.push(h);
+  const dropped = state.history.length > HISTORY_MAX
+    ? state.history.splice(0, state.history.length - HISTORY_MAX).length : 0;
+  historyAppend(h, dropped);
   logCost += performance.now() - t;
+}
+
+/* append one line to the History window (the Errors tab is rebuilt when it is
+   shown again, so nothing has to be appended while it is up) */
+function historyAppend(h, dropped) {
+  if (state.histTab === 'errors') { histDirty = true; return; }
+  const body = $('#history-body');
+  if (histDirty) { renderHistory(); return; }
+  const note = body.firstElementChild;
+  if (note && note.classList.contains('empty-note')) note.remove();
+  body.insertAdjacentHTML('beforeend', histRow(h));
+  for (let i = 0; i < dropped; i++) if (body.firstElementChild) body.removeChild(body.firstElementChild);
+  body.scrollTop = body.scrollHeight;
 }
 
 /* ---------------- history window ---------------- */
 function renderHistory() {
   const body = $('#history-body');
+  histDirty = false;
   if (state.histTab === 'errors') {
     body.innerHTML = state.errors.length
       ? state.errors.map(e => `<div class="hist-row err"><span class="t">${e.t}</span>${esc(e.text)}</div>`).join('')
       : '<div class="empty-note">No error messages.</div>';
   } else {
     body.innerHTML = state.history.length
-      ? state.history.map(h => `<div class="hist-row ${h.kind}"><span class="t">${h.t}</span>${esc(h.text)}</div>`).join('')
+      ? state.history.map(histRow).join('')
       : '<div class="empty-note">No commands executed yet. Press F5 to run the program.</div>';
   }
   body.scrollTop = body.scrollHeight;
@@ -1628,10 +1656,21 @@ function imageSourceBar(parsed) {
     const cur = imageArgName(parsed.args[fidx]);
     const known = IMAGE_SOURCES.get(cur);
     const opts = [];
-    if (cur && !known) opts.push(`<option value="${esc(cur)}" selected>${esc(cur)} — not loaded</option>`);
-    for (const rec of IMAGE_SOURCES.values()) {
-      opts.push(`<option value="${esc(rec.name)}"${rec.name === cur ? ' selected' : ''}>` +
-        `${esc(rec.name)}${rec.builtin ? ' (demo)' : ` (${rec.w}×${rec.h})`}</option>`);
+    /* every file name the session has seen is offered, whether its pixels are
+       still cached or were released to keep the memory down — read_image reads
+       the file again (js/opencv_ops.js collectSources) */
+    if (cur && !known && !IMAGE_NAMES.has(cur)) {
+      opts.push(`<option value="${esc(cur)}" selected>${esc(cur)} — not loaded</option>`);
+    }
+    const demo = IMAGE_SOURCES.get(BUILTIN_IMAGE);
+    if (demo) {
+      opts.push(`<option value="${esc(demo.name)}"${demo.name === cur ? ' selected' : ''}>` +
+        `${esc(demo.name)} (demo)</option>`);
+    }
+    for (const name of Array.from(IMAGE_NAMES).sort(imageNameSort)) {
+      const rec = IMAGE_SOURCES.get(name);
+      opts.push(`<option value="${esc(name)}"${name === cur ? ' selected' : ''}>` +
+        `${esc(name)}${rec && rec.w ? ` (${rec.w}×${rec.h})` : ''}</option>`);
     }
     html += `<span class="fb-label">Image file</span>` +
       `<select id="op-imgsrc" title="Image file that the ${esc(IMAGE_FILE_PARAM)} parameter refers to">` +
@@ -3123,6 +3162,19 @@ function releaseRecord(rec, exceptName) {
   let shared = false;
   state.iconic.forEach((r, n) => { if (r === rec && n !== exceptName) shared = true; });
   if (!shared) rec.dispose();
+  /* The last name for the record is gone, so nothing can display it again:
+     drop what dispose() does not own.  An image variable holds a full-resolution
+     display canvas (78 MB of RGBA for a 5088×3840 frame) and a JavaScript copy
+     of its gray values (19.5 MB, read_image keeps it for the history and pixel
+     probe) — the cv.Mat dispose() freed is only a third of what one frame of a
+     large image set costs, and a loop that reads a frame per iteration recycles
+     all three only because they are dropped here. */
+  if (shared) return;
+  rec.canvas = null;
+  rec.canvasFor = null;
+  /* the gray of an image variable is a plain Uint8Array copy; a cv.Mat must be
+     freed with delete() and is never bound to a name here */
+  if (rec.gray && typeof rec.gray.delete !== 'function') rec.gray = null;
 }
 
 /* put `rec` into the workspace under `name` (operator result, procedure
@@ -3231,6 +3283,7 @@ function haltLine(proc, n, text, op, reason) {
     t: now(),
     text: `${op ? `${op}: ` : ''}${reason} (${proc}, line ${n})`,
   });
+  if (state.errors.length > 200) state.errors.splice(0, state.errors.length - 200);
   log(`${op ? `${op}: ` : ''}${reason} — ${proc}, line ${n}. Execution stopped here.`, 'err');
   if (typeof showModal !== 'function') return;
   showModal('Invalid program line',
@@ -3876,20 +3929,34 @@ function syncUI() {
   renderWatch();
   GFX.wins.forEach(g => drawPlot(g));
   renderFeatureInspection();
+  /* The figure covers all image data, not only the cv.Mat of the current
+     variables: an image variable also owns a full-resolution RGBA canvas for the
+     display (4 bytes per pixel — 78 MB for a 5088×3840 frame) and a JavaScript
+     copy of its gray values, and the frame cache holds the decoded frames of the
+     files the program is reading.  The number that left those out said "112 MB"
+     while the page held half a gigabyte. */
   let bytes = 0;
   state.iconic.forEach(rec => {
     if (rec.mat) bytes += rec.mat.rows * rec.mat.cols;
     if (rec.labels) bytes += rec.labels.length * 4;
+    if (rec.gray && typeof rec.gray.length === 'number') bytes += rec.gray.length;
+    if (rec.canvas) bytes += rec.canvas.width * rec.canvas.height * 4;
   });
-  $('#status-mem').textContent = `Mem: ${Math.round(bytes / 1048576)} MB`;
+  IMAGE_SOURCES.forEach(rec => { if (rec.gray) bytes += rec.gray.cols * rec.gray.rows; });
+  const mb = bytes / 1048576;
+  $('#status-mem').textContent = `Mem: ${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
 }
 
 /* F2 / a fresh run must not leave a live handle behind: iconic variables (their
    cv.Mat data is released by dispose()), control variables (window handles,
    metrology model handles, acquisition handles), the metrology models and
    their index counters, the spawned graphics windows with their handle
-   numbers, and the camera streams opened by open_framegrabber. */
+   numbers, the camera streams opened by open_framegrabber, and the readahead
+   chain that is still decoding image files for a program that has ended.
+   The decoded frames themselves stay in the cache (js/opencv_ops.js): reading
+   the same file again is a copy, not another decode. */
 function clearRunState() {
+  prefetchCancel();                              // nothing is about to be read any more
   /* procedure parameters alias the caller's variables (one record for both
      names), so a record must be released exactly once */
   const freed = new Set();
@@ -4577,6 +4644,7 @@ const CMD = {
   open() { openProgram(); },
   save() { saveProgram(); },
   saveas() { saveProgramAs(); },
+  export() { exportWorkspace(); },
   loadimg() { openImageFile(); },
   loadfolder() { openImageFolder(); },
   setdir() { setWorkingFolder(); },
@@ -5047,6 +5115,9 @@ function loadLayout() {
     state.histTab = L.tabs.hist || 'history';
     [['variable-tabs', state.varsTab], ['operator-tabs', state.opTab], ['history-tabs', state.histTab]]
       .forEach(([bar, tab]) => $$(`#${bar} .tab`).forEach(t => t.classList.toggle('active', t.dataset.tab === tab)));
+    /* the list holds the rows of the tab that rendered it last, and the restored
+       layout can be on the other tab */
+    renderHistory();
   }
   Object.entries(WIN_IDS).forEach(([key, id]) => {
     const hidden = $('#' + id).classList.contains('hidden-win');
@@ -5966,6 +6037,64 @@ function downloadProgram(text, fname, note = '') {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
   log(`Program saved: ${fname}${note}`, 'msg');
+}
+
+/* binary sibling of downloadProgram, used by the workspace export */
+function downloadBytes(bytes, fname, mime) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fname;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 8000);
+}
+
+/* ---------------- export as a VS Code workspace (js/export.js) ---------------- */
+/* The dialog picks the target language and the workspace (folder) name; the OK
+   button builds the whole zip in the page and downloads it.  Everything is
+   client-side — see js/export.js for the zip writer and the emitters. */
+function exportWorkspace() {
+  const defName = String(state.progFile || 'program.odev')
+    .replace(/\.(odev|hdev|ovs)$/i, '').trim() || 'opencvs-workspace';
+  const langs = ExportKit.LANGUAGES.map(l =>
+    `<option value="${l.id}"${l.id === ExportKit.DEFAULT_LANGUAGE_ID ? ' selected' : ''}>${esc(l.label)}</option>`).join('');
+  showModal('Export as VS Code workspace',
+    `<p class="dim">Builds a <code>.zip</code> holding a complete VS Code workspace: the program
+       translated to the language you pick, a runtime for the operators it calls, the project
+       file and a ready <code>.vscode</code> folder &mdash; open the unzipped folder with
+       <b>File &rsaquo; Open Folder</b>.</p>
+     <div class="exp-row"><label for="exp-lang">Language</label><select id="exp-lang">${langs}</select></div>
+     <div class="exp-row"><label for="exp-name">Workspace name</label><input id="exp-name" type="text" value="${esc(defName)}"></div>
+     <p class="dim">The translation is structural: control flow and procedure interfaces become
+        real code, every operator becomes a call into the generated runtime, and the operators it
+        cannot map are clearly marked <b>TODO</b> stubs. The export is a starting point, not a
+        finished build.</p>`);
+  $('#modal-ok').textContent = 'Export';
+  $('#modal-ok').onclick = () => {
+    const langId = $('#exp-lang').value;
+    const name = $('#exp-name').value.trim();
+    closeModal();
+    runExportWorkspace(langId, name);
+  };
+  const nameIn = $('#exp-name');
+  nameIn.focus();
+  nameIn.select();
+}
+
+function runExportWorkspace(langId, name) {
+  try {
+    const ws = ExportKit.buildWorkspace(langId, PROCEDURES, { opinfo: OPINFO, workspaceName: name });
+    const bytes = ExportKit.zip(ws.files);
+    downloadBytes(bytes, `${ws.workspaceName}.zip`, 'application/zip');
+    log(`Export: ${ws.workspaceName}.zip — ${ws.files.length} files, ${ws.language.label}.`, 'msg');
+    setStatus(`Exported ${ws.workspaceName}.zip (${ws.language.label})`);
+  } catch (err) {
+    const msg = (err && err.message) ? err.message : String(err);
+    log(`Export failed: ${msg}`, 'err');
+    showModal('Export failed', `<p>The workspace could not be built:</p><div class="errline">${esc(msg)}</div>`);
+  }
 }
 
 function saveProgram(name) {

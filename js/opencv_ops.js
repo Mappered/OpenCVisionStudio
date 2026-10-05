@@ -446,7 +446,83 @@ const BUILTIN_IMAGE = 'printer_chip';
    measured distance.  Only truly oversized files (a panorama, a film scan) are
    reduced, and read_image says so when it happens. */
 const IMAGE_MAX_SIDE = 8192;
-const IMAGE_SOURCES = new Map();           // name -> { name, canvas, w, h, builtin }
+const IMAGE_SOURCES = new Map();           // name -> { name, canvas, gray, w, h, builtin }
+
+/* Every image file name this session has seen (the built-in demo picture is not
+   a file).  The name outlives the pixels: see GARBAGE COLLECTION below. */
+const IMAGE_NAMES = new Set();
+
+/* --------------------------------------------------------------------------
+   GARBAGE COLLECTION OF DECODED FRAMES
+
+   Reading a folder used to keep every frame it had ever read, for the life of
+   the page: the gray cv.Mat of a file was pinned under its name in
+   IMAGE_SOURCES until a read_image of that same name came along.  That is what
+   made a large image set unusable — measured on six 5088x3840 photos: 112 MB of
+   gray frames (19.5 MB each) that were never freed, plus, before the display
+   canvas became lazy, 6 x 78 MB of RGBA bitmaps.  A hundred such frames are
+   1.9 GB of WASM heap for data the program has already finished with.
+
+   19.5 MB of a frame that was read ten minutes ago, in a folder of a thousand,
+   buys nothing: a frame is only worth keeping if the program is likely to read
+   that name again soon, and the file can always be fetched and decoded again.
+   So the few most recently used frames are kept warm and the rest are released.
+   The name stays known — read_image, list_image_files and the Operator Window
+   still offer it — and the next read of it simply decodes it again, exactly as
+   if the file had never been read (which is why a released frame is only ever a
+   file that can be fetched again: see sourceReobtainable).
+
+   What is NOT freed here: the cv.Mat clone an image variable owns (that is the
+   variable's own pixels, released by js/app.js when the variable is rebound or
+   the run is cleared) and the display canvas of an image that is on screen.
+   -------------------------------------------------------------------------- */
+const SOURCE_KEEP = 3;                    // decoded frames kept warm for a re-read
+const SOURCE_KEEP_BYTES = 256 * 1048576;  // ...and never more than this much gray
+let sourceClock = 0;                      // logical time of the last use of a frame
+
+const sourceBytes = rec => (rec && rec.gray ? rec.gray.cols * rec.gray.rows : 0);
+function sourceTouch(rec) { if (rec) rec.used = ++sourceClock; }
+
+/* Can this frame be fetched and decoded again if it is released?  Only a file
+   the app can get its hands on twice: one a folder listing named (its URL is in
+   IMAGE_URLS), one that was fetched from a URL that worked, or one that sits in
+   the folder granted with "Folder...".  A file picked with "Load file..." /
+   "Load folder..." never existed anywhere but as the blob that was decoded here
+   — its bytes are gone once the blob is — so such a frame is never released. */
+function sourceReobtainable(rec) {
+  if (!rec || rec.builtin) return false;
+  if (rec.url) return true;                      // fetched, and it answered
+  if (IMAGE_URLS.has(rec.name)) return true;     // a folder listing named this file
+  return !!(rec.handle && IMAGE_DIR_HANDLE);     // the granted folder holds it
+}
+
+/* Release the decoded frames that are not worth keeping.  The frames named in
+   `pinned` and the ones the readahead chain is holding (SOURCE_PIN while it
+   works on them, DECODED once they are parked — those are the frames the program
+   is about to read) are never released, and neither is a frame that cannot be
+   obtained again.  Returns how many frames were released. */
+function collectSources(pinned) {
+  const keep = new Set(pinned || []);
+  const held = [];
+  for (const rec of IMAGE_SOURCES.values()) {
+    if (!rec.gray || !sourceReobtainable(rec)) continue;
+    if (keep.has(rec) || keep.has(rec.name)) continue;
+    if (SOURCE_PIN.has(rec.name) || DECODED.has(rec.name)) continue;
+    held.push(rec);
+  }
+  held.sort((a, b) => (b.used || 0) - (a.used || 0));    // most recently used first
+  let kept = 0, bytes = 0, freed = 0;
+  for (const rec of held) {
+    const cost = sourceBytes(rec);
+    if (kept < SOURCE_KEEP && bytes + cost <= SOURCE_KEEP_BYTES) { kept++; bytes += cost; continue; }
+    rec.gray.delete();                     // the WASM heap gives its 19.5 MB back
+    rec.gray = null;
+    rec.canvas = null;
+    IMAGE_SOURCES.delete(rec.name);
+    freed++;
+  }
+  return freed;
+}
 
 /* The folder that relative file names of list_image_files / read_image are
    resolved against.  '' is the folder the page is served from; "Load folder…"
@@ -658,18 +734,26 @@ function registerDecodedSource(name, img) {
 /* The gray cv.Mat of an image source, built once and then reused by every later
    read_image of the same file — a 5088×3840 photo costs ~0.4 s in here (the
    browser's PNG inflation, the 78 MB canvas readback into the WASM heap and the
-   gray expansion), while a repeat read is a ~5 ms copy.  The canvas is replaced
-   by the gray one, so the RGBA bitmap of a file that has been read is released.
-   The operator asks for this when it reads a file for the first time; the
-   readahead above asks for it while the program is busy elsewhere. */
+   gray expansion), while a repeat read is a ~5 ms copy.  The operator asks for
+   this when it reads a file for the first time; the readahead above asks for it
+   while the program is busy elsewhere.
+
+   The RGBA canvas was needed once, to hand the pixels to OpenCV, and is dropped
+   at the end: it is 78 MB for a 20 MP frame and nothing displays it — every
+   image variable builds its own canvas on demand (js/app.js recCanvas) — so
+   keeping one per file was 78 MB of bitmap per frame for the whole session.  The
+   demo picture is the app's own canvas (ctx.syntheticImage) and stays. */
 function decodeSource(rec) {
-  if (rec.gray) return rec;
+  if (rec.gray) return rec;                      // decoded already
+  if (!rec.canvas) return rec;                   // released: the caller reads the file again
   const rgba = cv.imread(rec.canvas);
   const gray = new cv.Mat();
   cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
   rgba.delete();
   rec.gray = gray;
-  rec.canvas = ocvGrayToCanvas(gray);
+  rec.w = gray.cols; rec.h = gray.rows;
+  if (!rec.builtin) rec.canvas = null;
+  sourceTouch(rec);
   return rec;
 }
 
@@ -681,7 +765,9 @@ async function loadImageFromUrl(name, url) {
   if (hit) return hit;
   const res = await fetch(url, { cache: 'no-store' });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return registerDecodedSource(name, await decodeImageBlob(await res.blob()));
+  const rec = registerDecodedSource(name, await decodeImageBlob(await res.blob()));
+  rec.url = url;                     // this URL answered, so the frame can be fetched again
+  return rec;
 }
 
 /* The folder granted with "Folder…" / "Set Working Folder…" (File System Access
@@ -731,7 +817,9 @@ async function fetchImageByName(name) {
       const file = await fh.getFile();
       const off = await graySourceInWorker(name, { file });
       if (off) return off;
-      return registerDecodedSource(name, await decodeImageBlob(file));
+      const rec = registerDecodedSource(name, await decodeImageBlob(file));
+      rec.handle = true;             // the granted folder can hand this file over again
+      return rec;
     } catch (_) { /* not there or not readable — try the folder URL instead */ }
   }
   const url = IMAGE_URLS.get(name) || imageFileUrl(name);
@@ -870,18 +958,21 @@ function grayInWorker(source) {
 }
 
 /* a source whose gray frame the worker has already built: the frame is adopted
-   into the WASM heap and the display canvas is cut from it, so the record looks
-   exactly like one of the canvas path */
+   into the WASM heap, so the record looks exactly like one of the canvas path —
+   minus the RGBA canvas, which is only built if an image variable shows it */
 async function graySourceInWorker(name, source) {
   const g = await grayInWorker(source);
   if (!g) return null;
   const gray = new cv.Mat(g.h, g.w, cv.CV_8UC1);
   gray.data.set(new Uint8Array(g.gray));
-  const rec = registerImageSource(name, ocvGrayToCanvas(gray), false);
+  const rec = registerImageSource(name, null, false);
   rec.gray = gray;
   rec.offThread = true;                    // the page did not inflate or read this one back
+  rec.w = g.w; rec.h = g.h;
   rec.srcW = g.sw; rec.srcH = g.sh;
   rec.scaled = g.sw !== g.w || g.sh !== g.h;
+  if (source.url) rec.url = source.url;    // this URL answered, so the frame is fetchable again
+  else rec.handle = true;                  // it came out of the granted folder
   return rec;
 }
 
@@ -909,6 +1000,7 @@ const PREFETCH_MAX = 12;       // never decode more than this many ahead
 const DECODED = new Map();     // name -> decoded source record, waiting to be read
 const DECODING = new Map();    // name -> promise: one fetch+decode per file, shared
 const TAKEN = new Set();       // names a read_image of this run has already read
+const SOURCE_PIN = new Set();  // frames the chain holds right now: never released under it
 let prefetchGen = 0;           // a new listing (or a stop) cancels the chain
 let prefetchWait = [];         // the chain parked on a full DECODED
 
@@ -954,21 +1046,35 @@ function prefetchImages(plan) {
   const step = async () => {
     const flight = [];        // the files on their way, in the order the program reads them
     const more = () => {
-      while (gen === prefetchGen && queue.length && flight.length < PREFETCH_INFLIGHT)
-        flight.push(loadImageByName(queue.shift()));
+      while (gen === prefetchGen && queue.length && flight.length < PREFETCH_INFLIGHT) {
+        const n = queue.shift();
+        SOURCE_PIN.add(n);    // its frame belongs to this chain until it is parked or dropped
+        flight.push({ n, p: loadImageByName(n) });
+      }
     };
     more();
-    while (gen === prefetchGen && flight.length) {
-      while (gen === prefetchGen && DECODED.size >= PREFETCH_AHEAD) await prefetchPark();
-      if (gen !== prefetchGen) return;
-      let rec = null;
-      try { rec = await flight.shift(); } catch (_) { rec = null; }  // unreadable: read_image reports it
-      more();
-      /* the same fetch is shared with a read_image, which decodes its own frame;
-         a frame the program read is not held (and cannot park the chain) */
-      if (!rec || TAKEN.has(rec.name)) continue;
-      decodeSource(rec);
-      DECODED.set(rec.name, rec);
+    try {
+      while (gen === prefetchGen && flight.length) {
+        while (gen === prefetchGen && DECODED.size >= PREFETCH_AHEAD) await prefetchPark();
+        if (gen !== prefetchGen) return;      // cancelled: the frames are ordinary cache entries
+        const { n, p } = flight.shift();
+        let rec = null;
+        try { rec = await p; } catch (_) { rec = null; }   // unreadable: read_image reports it
+        SOURCE_PIN.delete(n);
+        more();
+        /* the same fetch is shared with a read_image, which decodes its own frame;
+           a frame the program read is not held (and cannot park the chain) */
+        if (!rec || TAKEN.has(rec.name)) continue;
+        decodeSource(rec);
+        if (!rec.gray) continue;              // released under us: read_image reads it again
+        sourceTouch(rec);
+        DECODED.set(rec.name, rec);
+      }
+    } finally {
+      /* A chain that is cancelled while a file is being fetched leaves the files
+         behind it on their way too — they must not stay pinned against the
+         collection for the rest of the session (a pin outlives every read). */
+      for (const f of flight) SOURCE_PIN.delete(f.n);
     }
   };
   step();
@@ -986,6 +1092,11 @@ function prefetchTake(rec) {
 function prefetchCancel() {
   prefetchGen++;
   prefetchRelease();
+  /* Nothing is "about to be read" any more, so the frames the chain had parked
+     must not stay pinned against the collection either — they are ordinary
+     cache entries now (read_image still finds them, and a pixel that fell out of
+     the cache is read from the file again). */
+  DECODED.clear();
 }
 
 /* text files written by open_file / fwrite_string / close_file.  A browser page
@@ -1175,11 +1286,19 @@ function shapeFeature(regs, boxes, id, name) {
   throw new Error(`select_shape: feature '${f}' is not implemented in this build`);
 }
 
+/* Register (or replace) an image source.  `canvas` may be null: a frame decoded
+   on a worker thread arrives as gray pixels only, and the display canvas of a
+   file is built if and when an image variable shows it (see decodeSource). */
 function registerImageSource(name, canvas, builtin) {
   const prev = IMAGE_SOURCES.get(name);
   if (prev && prev.gray) prev.gray.delete();     // loading a file again must not leak its pixels
-  const rec = { name, canvas, builtin: !!builtin, w: canvas.width, h: canvas.height };
+  const rec = {
+    name, canvas, builtin: !!builtin,
+    w: canvas ? canvas.width : 0, h: canvas ? canvas.height : 0,
+  };
   IMAGE_SOURCES.set(name, rec);
+  if (!rec.builtin) IMAGE_NAMES.add(name);
+  sourceTouch(rec);
   return rec;
 }
 
@@ -1192,6 +1311,13 @@ const OP_IMPLS = {
     const t0 = performance.now();
     const want = controlString(args[1], ctx);
     let known = IMAGE_SOURCES.get(want);
+    /* A record can be here with its pixels gone — a frame the collection took
+       back between the decode and this line — so it is read again below rather
+       than handed out without data.  See GARBAGE COLLECTION above. */
+    if (known && !known.gray) {
+      decodeSource(known);
+      if (!known.gray) { IMAGE_SOURCES.delete(known.name); known = null; }
+    }
     const cached = !!(known && known.gray);   // this file has been read before
     const ahead = !!(known && DECODED.has(known.name));   // decoded while the program worked
     /* An image that a folder listing (list_image_files) found is fetched and
@@ -1202,8 +1328,8 @@ const OP_IMPLS = {
       if (known && known.scaled && !known.scaleWarned) {
         known.scaleWarned = true;
         ctx.log(`read_image: '${want}' is ${known.srcW}×${known.srcH} and was reduced to ` +
-          `${known.canvas.width}×${known.canvas.height} (over ${IMAGE_MAX_SIDE} px) — ` +
-          `distances measured on it are scaled by ${(known.srcW / known.canvas.width).toFixed(4)}.`, 'warn');
+          `${known.w}×${known.h} (over ${IMAGE_MAX_SIDE} px) — ` +
+          `distances measured on it are scaled by ${(known.srcW / known.w).toFixed(4)}.`, 'warn');
       }
       if (!known && isImageFileName(want)) {
         ctx.log(`read_image: '${want}' could not be read — it is not in the folder this program ` +
@@ -1221,26 +1347,37 @@ const OP_IMPLS = {
         (n ? ` (valid index 0…${n - 1})` : '') + '.', 'warn');
     }
     /* The frame: a file is decoded once (decodeSource) and every read of it
-       clones the gray cv.Mat — each iconic variable owns its own pixels, so
-       deleting a variable cannot free the source — and shares the display
-       canvas, which nothing ever draws into.  The built-in demo image is
-       converted here. */
-    let gray, canvas;
+       clones the gray cv.Mat, so each iconic variable owns its own pixels — a
+       variable can be released without touching another one's, or the source's.
+       The display canvas is not built here but by the variable that shows the
+       image (js/app.js recCanvas), so a program that only measures a frame never
+       pays 78 MB of RGBA for it.  The built-in demo picture is the app's own
+       canvas.  The frames the program is finished with are released right after
+       the clone. */
+    let gray, canvas = null, canvasFor = null;
     if (known) {
       decodeSource(known);
       prefetchTake(known);                 // this frame is not "decoded ahead" any more
+      sourceTouch(known);                  // …and it is the most recently used frame
       gray = known.gray.clone();
-      canvas = known.canvas;
+      if (known.builtin) canvas = known.canvas;               // shared with ctx.syntheticImage
+      else canvasFor = () => ocvGrayToCanvas(gray);
+      /* Garbage collection: the frames of the files this program has finished
+         with are released here (the frame just read and the ones the readahead
+         holds are kept).  Without this a run over a folder kept every frame it
+         had ever read — 19.5 MB each, in the WASM heap, for the life of the
+         page; that is what made a large image set unusable. */
+      collectSources([known]);
     } else {
       const rgba = cv.imread(ctx.syntheticImage());
       gray = new cv.Mat();
       cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
       rgba.delete();
-      canvas = ocvGrayToCanvas(gray);
+      canvasFor = () => ocvGrayToCanvas(gray);
     }
     ctx.defIconic(args[0], {
       kind: 'image', type: 'image (byte)',
-      mat: gray, canvas,
+      mat: gray, canvas, canvasFor,
       gray: gray.data.slice(0, gray.cols * gray.rows),
       dispose() { gray.delete(); },
     });
@@ -1752,9 +1889,11 @@ const OP_IMPLS = {
         for (const n of names) IMAGE_URLS.set(n, new URL(encodeURIComponent(n), dirUrl).href);
       }
     } else {
-      names = Array.from(IMAGE_SOURCES.values())
-        .filter(rec => !rec.builtin && (!filter || filter.test(rec.name)))
-        .map(rec => rec.name)
+      /* every file name this session has seen: a frame that was released to keep
+         the memory down is still a file of the folder (see collectSources), and
+         read_image reads it again when the program asks for it */
+      names = Array.from(IMAGE_NAMES)
+        .filter(n => !filter || filter.test(n))
         .sort(imageNameSort);
       how = 'loaded';
     }
@@ -2093,5 +2232,15 @@ function simCameraFrame(tick) {
   sq(320 - (tick * 6) % 240, 260, 60, 180);
   sq(480, 120 + (tick * 5) % 260, 40, 235);
   return g;
+}
+
+/* node export for the smoke test (tools/test-gc.js): the image-source cache and
+   its collection are DOM-free, so they can be exercised without a browser */
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    IMAGE_SOURCES, IMAGE_NAMES, IMAGE_URLS,
+    SOURCE_KEEP, SOURCE_KEEP_BYTES,
+    registerImageSource, collectSources, sourceBytes, sourceTouch, sourceReobtainable,
+  };
 }
 

@@ -48,6 +48,28 @@
             "group": "test",
             "presentation": { "reveal": "always", "panel": "shared", "clear": true },
             "problemMatcher": []
+        },
+        {
+            "label": "test: export",
+            "detail": "tools/test-export.js — the workspace export (js/export.js): the zip writer, the language catalogue, the translation and every emitter",
+            "type": "shell",
+            "command": "${workspaceFolder}\\tools\\node\\node.exe",
+            "args": ["${workspaceFolder}\\tools\\test-export.js"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "test",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+            "problemMatcher": []
+        },
+        {
+            "label": "test: gc",
+            "detail": "tools/test-gc.js — the frame cache of js/opencv_ops.js: which decoded frames are kept warm and which are given back to OpenCV",
+            "type": "shell",
+            "command": "${workspaceFolder}\\tools\\node\\node.exe",
+            "args": ["${workspaceFolder}\\tools\\test-gc.js"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "group": "test",
+            "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+            "problemMatcher": []
         }
     ]
 }
