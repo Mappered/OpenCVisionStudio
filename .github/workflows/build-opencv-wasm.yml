@@ -10,7 +10,15 @@
 # NO EXTERNAL ACTIONS: emsdk is a git clone plus a shell script, checkout and
 # publishing are git, all plain commands.
 #
-# Output: `artifacts` branch, opencv/<version>/wasm32/
+# Output: `artifacts` branch, opencv/<version>/wasm32/<flavour>/. The flavour
+# spells out the flags the package was built with (for example
+# core-imgproc-simd-imgcodecs), so two dispatches with different flags each keep
+# their own directory instead of overwriting one another. What every flag buys,
+# and what the app has to do to make use of it, is written up in README.md under
+# "WASM performance profile".
+#
+# The defaults are the performance profile: SIMD on, image codecs on, one file
+# per module set, no pthreads (that one needs COOP/COEP on the host).
 
 name: Build OpenCV WASM
 
@@ -26,13 +34,25 @@ on:
         type: string
         default: core,imgproc
       simd:
-        description: Build with WASM SIMD
+        description: Build with WASM SIMD (-msimd128 and CV_ENABLE_INTRINSICS)
+        type: boolean
+        default: true
+      threads:
+        description: Build with pthreads (the host must serve COOP/COEP headers)
         type: boolean
         default: false
+      single_file:
+        description: Embed the wasm inside opencv.js instead of emitting opencv_js.wasm
+        type: boolean
+        default: false
+      imgcodecs:
+        description: Build the bundled codecs and bind cv.imdecode/cv.imencode
+        type: boolean
+        default: true
       emsdk_version:
-        description: emsdk version to install (pin this once a working one is known)
+        description: emsdk version to install
         type: string
-        default: latest
+        default: 6.0.9
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -50,15 +70,30 @@ on:
         required: false
         default: core,imgproc
       simd:
-        description: Build with WASM SIMD
+        description: Build with WASM SIMD (-msimd128 and CV_ENABLE_INTRINSICS)
+        type: boolean
+        required: false
+        default: true
+      threads:
+        description: Build with pthreads (the host must serve COOP/COEP headers)
         type: boolean
         required: false
         default: false
+      single_file:
+        description: Embed the wasm inside opencv.js instead of emitting opencv_js.wasm
+        type: boolean
+        required: false
+        default: false
+      imgcodecs:
+        description: Build the bundled codecs and bind cv.imdecode/cv.imencode
+        type: boolean
+        required: false
+        default: true
       emsdk_version:
         description: emsdk version to install
         type: string
         required: false
-        default: latest
+        default: 6.0.9
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -71,7 +106,9 @@ permissions:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    # Generous: a full wasm rebuild with the image codecs and -O3 takes hours on
+    # a hosted runner, and GitHub kills a job at 360 minutes regardless.
+    timeout-minutes: 330
     steps:
       - name: Fetch opencv source and build recipe
         shell: bash
@@ -112,7 +149,8 @@ jobs:
           set -euo pipefail
           bash build/wasm/ci-opencv-wasm.sh \
             "$PWD/opencv" "$PWD" "$PWD/staging" "$PWD/dist" \
-            '${{ inputs.modules }}' '${{ inputs.simd }}' '${{ inputs.emsdk_version }}'
+            '${{ inputs.modules }}' '${{ inputs.simd }}' '${{ inputs.emsdk_version }}' \
+            '${{ inputs.threads }}' '${{ inputs.single_file }}' '${{ inputs.imgcodecs }}'
           ls -l dist
 
       - name: Publish to the artifacts branch
@@ -122,14 +160,22 @@ jobs:
           set -euo pipefail
           version=$(python3 -c "import json;print(json.load(open('dist/BUILDINFO.json'))['version'])")
           platform=$(python3 -c "import json;print(json.load(open('dist/BUILDINFO.json'))['platform'])")
-          dest="opencv/$version/$platform"
+          flavor=$(python3 -c "import json;print(json.load(open('dist/BUILDINFO.json'))['flavor'])")
+          package=$(python3 -c "import json;print(json.load(open('dist/BUILDINFO.json'))['package_file'])")
+          # One directory per flavour: a SIMD build and a pthreads build of the
+          # same version and platform are both legitimate, and neither may
+          # overwrite the other.
+          dest="opencv/$version/$platform/$flavor"
 
           checkout="$RUNNER_TEMP/artifacts-repo"
           rm -rf "$checkout"
           git clone --quiet --branch artifacts \
             "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" "$checkout"
           mkdir -p "$checkout/$dest"
-          cp dist/*.zip dist/SHA256SUMS dist/BUILDINFO.json "$checkout/$dest/"
+          # Drop leftovers from an earlier build of this same flavour under a
+          # different name, so the directory always describes one package.
+          rm -f "$checkout/$dest"/*.zip "$checkout/$dest"/SHA256SUMS "$checkout/$dest"/BUILDINFO.json
+          cp "dist/$package" dist/SHA256SUMS dist/BUILDINFO.json "$checkout/$dest/"
 
           # Regenerate the shared index from every package on the branch, so one
           # package's build never drops another's entry.
@@ -138,7 +184,10 @@ jobs:
 
           root = pathlib.Path(sys.argv[1])
           packages = []
-          for info in sorted(root.glob('*/*/*/BUILDINFO.json')):
+          # Flavour-qualified wasm packages sit one level deeper than the
+          # single-flavour native ones, so both layouts are collected.
+          infos = sorted(list(root.glob('*/*/*/BUILDINFO.json')) + list(root.glob('*/*/*/*/BUILDINFO.json')))
+          for info in infos:
               data = json.loads(info.read_text(encoding='utf-8-sig'))
               data['path'] = str(info.parent.relative_to(root)).replace('\\', '/')
               packages.append(data)
@@ -153,12 +202,13 @@ jobs:
               'Prebuilt dependencies produced by CI. Consumers download these so they',
               'need neither cmake nor a toolchain of their own.',
               '',
-              '| Package | Version | Platform | Modules | Toolchain | Built (UTC) |',
-              '|---|---|---|---|---|---|',
+              '| Package | Version | Flavour | Platform | Modules | Toolchain | Built (UTC) |',
+              '|---|---|---|---|---|---|---|',
           ]
           for p in packages:
-              lines.append('| {pkg} | {ver} | {plat} | {mods} | {tool} | {ts} |'.format(
-                  pkg=p.get('package', ''), ver=p.get('version', ''), plat=p.get('platform', ''),
+              lines.append('| {pkg} | {ver} | {flav} | {plat} | {mods} | {tool} | {ts} |'.format(
+                  pkg=p.get('package', ''), ver=p.get('version', ''),
+                  flav=p.get('flavor') or '-', plat=p.get('platform', ''),
                   mods=p.get('modules') or '-', tool=p.get('toolchain', ''), ts=p.get('built_utc', '')))
           lines += [
               '',
@@ -167,13 +217,21 @@ jobs:
               '```sh',
               'git fetch origin artifacts',
               'git show origin/artifacts:manifest.json',
+              '# The table above lists every path, flavour by flavour:',
               'git archive --remote=origin artifacts opencv/4.14.0/win-x64 | tar -x',
-              'git archive --remote=origin artifacts opencv/4.14.0/wasm32 | tar -x',
+              'git archive --remote=origin artifacts opencv/4.14.0/wasm32/core-imgproc-simd-imgcodecs | tar -x',
               '```',
               '',
+              'A wasm package built without single-file ships `opencv.js` next to',
+              '`opencv_js.wasm` and the two must stay together; `BUILDINFO.json` in the',
+              'same directory records the modules, the flags, the emscripten version',
+              'and the wasm features that are actually present in the binary. A',
+              'pthreads flavour additionally needs `Cross-Origin-Opener-Policy:',
+              'same-origin` and `Cross-Origin-Embedder-Policy: require-corp` on the',
+              'host that serves it.',
+              '',
               'Pin the commit of this branch, not the branch name, for a reproducible',
-              'build. Each BUILDINFO.json records the toolchain, the subtree tree hash',
-              'and the exact module list the package was built from.',
+              'build.',
               '',
           ]
           (root / 'README.md').write_text('\n'.join(lines), encoding='utf-8')
@@ -198,10 +256,23 @@ jobs:
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           info = json.load(open('dist/BUILDINFO.json'))
-          print("OpenCV {} (wasm32), modules: {}".format(info['version'], info['modules']))
+          print("## OpenCV {} (wasm32)".format(info['version']))
+          print()
+          print("Package: `{}`".format(info['package_file']))
+          print()
+          print("| Flag | Value |")
+          print("|---|---|")
+          for key in ('modules', 'simd', 'imgcodecs', 'threads', 'single_file',
+                      'optimization', 'wasm_features', 'initial_memory', 'maximum_memory',
+                      'host_requirements'):
+              if key in info:
+                  print("| {} | {} |".format(key, info[key]))
           print()
           print("Toolchain: {}".format(info['toolchain']))
-          print("Subtree tree: {}".format(info['subtree_tree']))
+          print()
+          print("Subtree tree: {}  ".format(info['subtree_tree']))
           print("Source commit: {} ({})".format(info['source_commit'], info['source_ref']))
-          print("SIMD: {}".format(info.get('simd')))
+          print()
+          print("Published to `artifacts` as `opencv/{}/wasm32/{}/`.".format(
+              info['version'], info['flavor']))
           PY
