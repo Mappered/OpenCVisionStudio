@@ -40,7 +40,7 @@ command that runs identically on a laptop.
 | Workflow | Recipe | Runs on | Produces |
 |---|---|---|---|
 | `build-opencv-wasm.yml` | `build/wasm/ci-opencv-wasm.sh` | ubuntu | `opencv/<version>/wasm32/<flavour>/` |
-| `build-opencv.yml` | `build/mingw/ci-opencv.sh` | windows | `opencv/<version>/win-x64/` |
+| `build-opencv.yml` | `build/mingw/ci-opencv.sh` | windows | `opencv/<version>/win-x64/`, then calls the wasm workflow |
 | `build-aravis.yml` | `build/mingw/ci-aravis.sh` | windows | `aravis/<version>/win-x64/` |
 | `probe-mf.yml` | `build/mingw/ci-mf-probe.sh` | windows | Media Foundation probe results |
 | `create-release.yml` | — | ubuntu | a GitHub release |
@@ -67,6 +67,29 @@ which is how a recipe change is tested without touching the default branch.
 **Second consequence:** a recipe has to be self-contained. Nothing else is
 fetched, so a recipe that needs a helper has to inline it — which is why the wasm
 recipe writes its verifier and smoke test out as heredocs.
+
+### The build chain
+
+`build-opencv.yml` (windows, the native package) ends by calling
+`build-opencv-wasm.yml` as a reusable workflow, so one dispatch produces both the
+native and the browser artifact from the same source commit:
+
+```text
+update-subtrees.yml ──► build-opencv.yml ──► build-opencv-wasm.yml
+   (refresh source)        (win-x64)             (wasm32, needs the native job)
+```
+
+Two details make that chain safe:
+
+* the native build's `modules` input is its **own** `BUILD_LIST` and is *not*
+  forwarded — a wasm package without imgproc has no `cv.blur`. The wasm leg has
+  its own `wasm_modules` (default `core,imgproc`).
+* `wasm_simd` defaults to `true` on both paths, so a native build never publishes
+  a non-SIMD browser package by accident. `imgcodecs`, `threads`, `single_file`
+  and `emsdk_version` take their defaults from the reusable workflow.
+
+Every call is a `workflow_call` rather than a push trigger because the jobs push
+with `GITHUB_TOKEN`, and GitHub does not start runs for events that token causes.
 
 ## The source subtree
 

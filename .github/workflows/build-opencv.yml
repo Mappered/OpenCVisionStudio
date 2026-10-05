@@ -15,6 +15,7 @@
 # Source of truth : the `opencv/` subtree on external/OpenCV
 # Build recipe    : build/mingw/ci-opencv.sh - pacman, cmake, ninja, gcc, package
 # Output          : `artifacts` branch, opencv/<version>/win-x64/
+#                   plus, via build-opencv-wasm.yml, opencv/<version>/wasm32/<flavour>/
 
 name: Build OpenCV
 
@@ -36,7 +37,11 @@ on:
       wasm_simd:
         description: Build the WASM package with SIMD
         type: boolean
-        default: false
+        default: true
+      wasm_modules:
+        description: Comma separated module list for the WASM BUILD_LIST
+        type: string
+        default: core,imgproc
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -57,12 +62,17 @@ on:
         description: Also build the WASM package (separate ubuntu workflow)
         type: boolean
         required: false
-        default: false
+        default: true
       wasm_simd:
         description: Build the WASM package with SIMD
         type: boolean
         required: false
-        default: false
+        default: true
+      wasm_modules:
+        description: Comma separated module list for the WASM BUILD_LIST
+        type: string
+        required: false
+        default: core,imgproc
       publish:
         description: Publish the built package to the artifacts branch
         type: boolean
@@ -244,12 +254,19 @@ jobs:
   # ubuntu: the target is wasm32, so the host OS is irrelevant, and emscripten is
   # far better supported on Linux than under MSYS2. Called from here so the
   # Windows run produces both the native and the browser artifact.
+  #
+  # NOTE: this build's own `modules` input (default `core`) is the native
+  # BUILD_LIST and is NOT forwarded - a wasm package without imgproc has no
+  # cv.blur, so the wasm leg has its own list. The remaining wasm inputs
+  # (imgcodecs, threads, single_file, emsdk_version) take their defaults from
+  # the reusable workflow, which are the ones in README.md's performance
+  # profile.
   wasm:
     needs: build-and-publish
     if: ${{ inputs.wasm }}
     uses: ./.github/workflows/build-opencv-wasm.yml
     with:
       source_ref: ${{ inputs.source_ref }}
-      modules: ${{ inputs.modules }}
+      modules: ${{ inputs.wasm_modules }}
       simd: ${{ inputs.wasm_simd }}
       publish: ${{ inputs.publish }}
