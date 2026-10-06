@@ -22,7 +22,15 @@
 #   emsdk-version  default 6.0.9  - the emscripten that last built this source
 #   threads        default false  - --threads: pthreads, needs COOP/COEP on the host
 #   single-file    default false  - one .js with the wasm base64-embedded
-#   imgcodecs      default true   - build the codecs and bind cv.imdecode/imencode
+#   imgcodecs      default true   - build the codecs, declare imgcodecs as a js
+#                                   wrapper and bind cv.imdecode
+#
+# Three upstream source files are rewritten in place, each verified, each only
+# when the matching flag is on: modules/js/CMakeLists.txt for the linear memory
+# ceiling, modules/imgcodecs/CMakeLists.txt for the js wrapper, and
+# platforms/js/opencv_js.config.py for the binding list (staged, not rewritten).
+# See the comments at each patch. Which of them ran is recorded in
+# BUILDINFO.json as source_patches.
 #
 # Environment knobs:
 #   WASM_INITIAL_MEMORY  initial linear memory, default 128MB
@@ -108,6 +116,22 @@ fi
 # shellcheck disable=SC1091
 source "$emsdk_dir/emsdk_env.sh"
 command -v emcc >/dev/null 2>&1 || { echo 'error: emcc not on PATH after emsdk activate' >&2; exit 1; }
+# emsdk installs the node build its own emscripten is tested against and exports
+# it as EMSDK_NODE. Put it first on PATH so the verification at the end of this
+# script runs on that node rather than on whichever one the machine happens to
+# carry: the smoke test require()s the generated module, and node is a moving
+# target.
+if [ -n "${EMSDK_NODE:-}" ] && [ -x "$EMSDK_NODE" ]; then
+	PATH="$(dirname "$EMSDK_NODE"):$PATH"
+	export PATH
+fi
+# binaryen is part of what `emsdk install` fetches, and its disassembler is how
+# the SIMD flag is verified further down: this toolchain's -O3 link drops every
+# custom section, so the module does not carry a `target_features` declaration
+# to read. Missing binaryen means the emsdk install is not what was asked for,
+# which is worth failing on before an hour of compiling rather than after.
+wasm_dis="$emsdk_dir/upstream/bin/wasm-dis"
+[ -x "$wasm_dis" ] || { echo "error: $wasm_dis not found - incomplete emsdk install" >&2; exit 1; }
 emcc --version | head -n1
 python3 --version
 node --version
@@ -122,6 +146,9 @@ case "$build_dir" in
 	*) echo "error: refusing to clean unexpected build dir: $build_dir" >&2; exit 1 ;;
 esac
 mkdir -p "$build_dir" "$staging" "$dist"
+
+# Which upstream files this run had to rewrite, recorded in BUILDINFO.json.
+source_patches=''
 
 # --- linear memory ---------------------------------------------------------
 # OpenCV hard codes the memory settings on the js target's link line:
@@ -146,19 +173,90 @@ if grep -qF -- "$memory_line" "$js_cmake"; then
 	grep -qF -- "-s WASM_MEM_MAX=$maximum_memory" "$js_cmake" \
 		|| { echo "error: memory patch did not take: $js_cmake" >&2; exit 1; }
 	echo "memory: initial $initial_memory, max $maximum_memory"
+	source_patches="modules/js/CMakeLists.txt (linear memory)"
+elif grep -qF -- "-s WASM_MEM_MAX=$maximum_memory" "$js_cmake"; then
+	# Already carrying exactly the ceiling that was asked for: a re-run over a
+	# tree this script patched earlier. Not an error, and still recorded, but it
+	# must not be mistaken for a fresh patch.
+	echo "memory: already at initial $initial_memory, max $maximum_memory"
+	source_patches="modules/js/CMakeLists.txt (linear memory)"
 else
-	echo "warning: memory line not found in $js_cmake - upstream memory settings kept" >&2
-	echo "warning: wanted: $memory_line" >&2
+	# Neither the upstream line nor the requested ceiling is there, so this is
+	# upstream drift, not a re-run. Continuing would build with memory limits
+	# nobody chose, which is the failure mode this whole block exists to prevent.
+	echo "error: no memory settings found in $js_cmake" >&2
+	echo "       expected '$memory_line'" >&2
+	echo "       or the already-patched '-s WASM_MEM_MAX=$maximum_memory'" >&2
+	echo '       upstream moved the line; refusing to guess the memory limits' >&2
+	exit 1
+fi
+
+# --- declare imgcodecs as a js wrapper -------------------------------------
+# build_js.py turns the codecs on with -DBUILD_opencv_imgcodecs=ON, but upstream
+# declares the module as
+#   modules/imgcodecs/CMakeLists.txt: ocv_add_module(imgcodecs opencv_imgproc WRAP java objc python)
+# and embindgen only ever looks at the headers of modules that list `js` among
+# their wrappers (modules/js/common.cmake). Without `js` the codecs are compiled
+# and then used for nothing: no imdecode/imencode in the generated bindings and
+# no imgcodecs dependency for the opencv_js target, so the package would only
+# look like it had image I/O. The declaration is rewritten in place and the
+# result is checked, the same way the memory line is.
+if [ "$imgcodecs" = true ]; then
+	imgcodecs_cmake="$opencv_dir/modules/imgcodecs/CMakeLists.txt"
+	set +e
+	python3 - "$imgcodecs_cmake" <<'PY'
+import re, sys
+
+path = sys.argv[1]
+text = open(path).read()
+# Exactly one such declaration, on one line, so nothing can be mangled by a
+# regex that happens to match twice.
+pattern = re.compile(r'^ocv_add_module\(imgcodecs\b[^\n)]*\)[ \t]*$', re.M)
+matches = pattern.findall(text)
+if len(matches) != 1:
+    raise SystemExit('cannot patch %s: expected exactly one ocv_add_module(imgcodecs ...) '
+                     'line, found %d' % (path, len(matches)))
+line = matches[0]
+if re.search(r'\bjs\b', line):
+    print('imgcodecs: js wrapper already declared: ' + line)
+    sys.exit(3)  # already correct, nothing rewritten
+text = pattern.sub(lambda m: m.group(0)[:-1] + ' js)', text, count=1)
+with open(path, 'w') as handle:
+    handle.write(text)
+declared = pattern.search(text).group(0)
+if not re.search(r'\bjs\b', declared):
+    raise SystemExit('imgcodecs js wrapper patch did not take: ' + declared)
+print('imgcodecs: js wrapper declared: ' + declared)
+PY
+	patch_rc=$?
+	set -e
+	case "$patch_rc" in
+		0) source_patches="${source_patches}${source_patches:+, }modules/imgcodecs/CMakeLists.txt (js wrapper)" ;;
+		3) : ;;
+		*) echo "error: imgcodecs js wrapper patch failed (rc=$patch_rc)" >&2; exit 1 ;;
+	esac
 fi
 
 # --- JS binding whitelist --------------------------------------------------
 # Upstream's list is used as-is. build_js.py hard codes
 # -DBUILD_opencv_imgcodecs=OFF, and imgcodecs is not in the whitelist either, so
-# enabling the codecs means adding the two entry points as well - otherwise the
+# enabling the codecs means adding the entry points as well - otherwise the
 # module is compiled and never bound, which is pure payload. The patched list is
 # derived from upstream's file at build time and never hand-maintained, so it
 # cannot drift. The result is staged, so the exact list used ships with the
 # package.
+#
+# Only imdecode is listed. It takes (InputArray, int), both of which embind
+# marshals natively, so `cv.imdecode(cv.matFromArray(1, n, cv.CV_8U, bytes), flags)`
+# is callable and is what the smoke test proves at the end of this script.
+# imencode is deliberately left out: its buffer is declared
+#   CV_OUT std::vector<uchar>& buf
+# and embind has no marshalling for std::vector<unsigned char>. embindgen's
+# with_vec_from_js_array only rewrites *const* vector references (inputs), and
+# register_vector is never called for the unsigned char instantiation - upstream
+# registers std::vector<char> as "CharVector", which is a different type - so the
+# generated registration throws "Cannot call imencode due to unbound types" on
+# every call. A binding that exists and always fails is worse than no binding.
 config="$opencv_dir/platforms/js/opencv_js.config.py"
 if [ "$imgcodecs" = true ]; then
 	config="$staging/opencv_js.config.py"
@@ -172,8 +270,8 @@ patched, count = re.subn(r'white_list = makeWhiteList\(\[',
 if count != 1:
     raise SystemExit('cannot patch %s: makeWhiteList call not found' % source)
 with open(target, 'w') as handle:
-    handle.write("imgcodecs = {'': ['imdecode', 'imencode']}\n" + patched)
-print('whitelist: added imgcodecs.imdecode / imgcodecs.imencode')
+    handle.write("imgcodecs = {'': ['imdecode']}\n" + patched)
+print('whitelist: added imgcodecs.imdecode')
 PY
 fi
 
@@ -254,23 +352,40 @@ for artifact in "${stage_files[@]}"; do
 	fi
 done
 [ "$fail" -eq 0 ] || { echo 'build produced no usable artifact'; exit 1; }
-cp -f "$config" "$staging/opencv_js.config.py"
+
+# Keep the whitelist next to the package, so the exact set of bindings can be
+# reproduced from the archive alone. With imgcodecs on, $config already *is* that
+# path: `cp file file` is an error, and under set -e it would abort the run right
+# after an otherwise clean build.
+if [ "$config" != "$staging/opencv_js.config.py" ]; then
+	cp -f "$config" "$staging/opencv_js.config.py"
+fi
 
 # ---------------------------------------------------------------------------
 # Verify the artifact really has the features that were asked for
 # ---------------------------------------------------------------------------
 # This is the difference between "the build succeeded" and "the build is what we
-# ordered". clang records the enabled target features in a `target_features`
-# custom section, and nothing in this pipeline rewrites the wasm afterwards (no
-# wasm-opt/binaryen pass), so the section is authoritative: a module built
-# without -msimd128 does not contain '+simd128'. For a single-file build the
-# same bytes are checked after unwrapping the embedded base64.
+# ordered". Two probes, because neither answers the question alone:
+#
+#   * what the module *declares*: the glue must contain the helpers upstream
+#     writes in JavaScript, and a requested binding must be registered in the
+#     wasm - embind keeps the name given to .function(...) in the module's data
+#     section, so the glue is the wrong place to look for it;
+#   * what the module *executes*: the SIMD flag is proved by disassembling the
+#     code section and looking for v128 instructions. This toolchain emits no
+#     `target_features` custom section at all (-O3 drops every custom section:
+#     no name, no producers, no features), so a declaration-based check cannot
+#     answer that question here.
+#
+# The verifier writes back the module it validated - separate file or unwrapped
+# from a single-file build's base64 - so the disassembler sees the real bytes
+# either way.
 echo '=== verify ==='
 cat > "$staging/opencv-wasm-verify.js" <<'JS'
-// Usage: opencv-wasm-verify.js <opencv.js> <opencv_js.wasm|-> <simd> <imgcodecs>
+// Usage: opencv-wasm-verify.js <opencv.js> <opencv_js.wasm|-> <imgcodecs> <wasm-out>
 const fs = require('fs');
 
-const [jsPath, wasmPath, wantSimd, wantCodecs] = process.argv.slice(2);
+const [jsPath, wasmPath, wantCodecs, wasmOut] = process.argv.slice(2);
 const js = fs.readFileSync(jsPath, 'utf8');
 
 // A single-file build is a ~11 MB script embedding a ~8 MB base64 blob.
@@ -313,72 +428,76 @@ if (bytes.subarray(0, 4).toString('hex') !== '0061736d') {
     console.error('FAIL: payload is not a wasm module');
     process.exit(1);
 }
+// Hand the validated bytes to the feature probe, which needs a file on disk
+// whatever the layout was.
+fs.writeFileSync(wasmOut, bytes);
 
-function leb(data, at) {
-    let result = 0, shift = 0, byte;
-    do { byte = data[at++]; result |= (byte & 0x7f) << shift; shift += 7; } while (byte & 0x80);
-    return [result >>> 0, at];
-}
-function name(data, at) {
-    const [length, start] = leb(data, at);
-    return [data.toString('latin1', start, start + length), start + length];
-}
-// Walk the section table to the `target_features` custom section (id 0).
-function targetFeatures(data) {
-    let at = 8;
-    while (at < data.length) {
-        const id = data[at++];
-        const [size, start] = leb(data, at);
-        const end = start + size;
-        if (id === 0) {
-            const [sectionName, payload] = name(data, start);
-            if (sectionName === 'target_features') {
-                const features = [];
-                let cursor = payload;
-                while (cursor < end) {
-                    const prefix = String.fromCharCode(data[cursor++]);
-                    const [feature, next] = name(data, cursor);
-                    features.push(prefix + feature);
-                    cursor = next;
-                }
-                return features;
-            }
-        }
-        at = end;
-    }
-    return null;
-}
-
-const features = targetFeatures(bytes);
-console.log('target_features: ' + (features === null ? '(none)' : features.join(' ')));
-const hasSimd = features !== null && features.indexOf('+simd128') !== -1;
-if (wantSimd === 'true' && !hasSimd) {
-    console.error('FAIL: simd requested but the module does not declare +simd128');
+// A bound function's name does not appear in the glue at all: embind stores the
+// name given to each .function(...) inside the wasm data section. So the glue is
+// only checked for the helpers upstream writes in JavaScript, and the codecs are
+// checked in the wasm bytes and then proved for real by the smoke test below,
+// which loads the module. (The glue does contain imread, but that one is a
+// canvas helper from modules/js/src/helpers.js - asserting it says nothing about
+// whether imgcodecs was bound.)
+if (!/\bmatFromArray\b/.test(js)) {
+    console.error('FAIL: cv.matFromArray is missing - the glue is not an OpenCV js build');
     process.exit(1);
 }
-if (wantSimd === 'false' && hasSimd) {
-    console.log('note: simd not requested, module still declares +simd128');
-}
-// Both names are only in the glue when the patched whitelist took effect, so
-// requiring both keeps a stray mention of one from passing as a binding.
-if (wantCodecs === 'true' && !(/\bimdecode\b/.test(js) && /\bimencode\b/.test(js))) {
-    console.error('FAIL: imgcodecs requested but cv.imdecode/cv.imencode are not bound');
-    process.exit(1);
-}
-if (!/\bimread\b/.test(js)) {
-    console.error('FAIL: cv.imread is not bound in opencv.js');
+if (wantCodecs === 'true' && !bytes.includes(Buffer.from('imdecode'))) {
+    console.error('FAIL: imgcodecs requested but no imdecode registration is in the wasm');
     process.exit(1);
 }
 console.log('verify OK');
 JS
 wasm_input='-'
 [ "$single_file" = true ] || wasm_input="$staging/opencv_js.wasm"
-verify_out=$(node "$staging/opencv-wasm-verify.js" "$staging/opencv.js" "$wasm_input" "$simd" "$imgcodecs" 2>&1) || {
+probe_dir=$(mktemp -d "${TMPDIR:-/tmp}/opencv-wasm-probe-XXXXXX")
+probe_wasm="$probe_dir/module.wasm"
+verify_out=$(node "$staging/opencv-wasm-verify.js" "$staging/opencv.js" "$wasm_input" "$imgcodecs" "$probe_wasm" 2>&1) || {
 	printf '%s\n' "$verify_out"
 	echo 'wasm verification failed'; exit 1
 }
 printf '%s\n' "$verify_out"
-wasm_features=$(printf '%s\n' "$verify_out" | sed -n 's/^target_features: //p' | head -n1)
+
+# --- what the code section actually executes ------------------------------
+# Disassembling and counting v128 mnemonics is a statement about the binary, not
+# about the recipe's intentions: a build that silently ignored -msimd128 has no
+# such instructions, and a non-SIMD build of the same source has none either
+# (verified: a plain module scores 0 here). The instruction stream is large -
+# ~90 MB of text for this module - so it goes to a file rather than down a pipe,
+# where the SIGPIPE from an early-exiting grep would be mistaken for a failure.
+echo '=== wasm features ==='
+probe_wat="$probe_dir/module.wat"
+"$wasm_dis" "$probe_wasm" > "$probe_wat" 2>/dev/null || {
+	echo 'error: wasm-dis could not read the built module' >&2; exit 1
+}
+# `|| true` is load-bearing: under `set -o pipefail` a grep with no match makes
+# the whole pipeline fail, and a failing command substitution in an assignment
+# is fatal under `set -e` - which is exactly the non-SIMD case this has to
+# report on rather than die from.
+simd_ops=$(grep -oE '\b(i8x16|i16x8|i32x4|i64x2|f32x4|f64x2)\.[a-z0-9_]+' "$probe_wat" | wc -l || true)
+if [ "$simd" = true ]; then
+	if [ "$simd_ops" -gt 0 ]; then
+		echo "ok   simd: $simd_ops v128 instructions in the code section"
+	else
+		echo 'FAIL simd requested but the code section contains no v128 instructions' >&2
+		exit 1
+	fi
+elif [ "$simd_ops" -gt 0 ]; then
+	echo "note simd not requested, module still uses $simd_ops v128 instructions"
+fi
+
+wasm_features=''
+[ "$simd_ops" -gt 0 ] && wasm_features='simd128'
+# The same probe reports bulk memory honestly. It is worth naming because it is
+# not part of the wasm MVP: every engine this app targets has it, but a consumer
+# reading BUILDINFO.json should not have to guess.
+if grep -qE '\bmemory\.(copy|fill)\b' "$probe_wat"; then
+	wasm_features="${wasm_features:+$wasm_features }bulk-memory"
+fi
+[ -n "$wasm_features" ] || wasm_features='none'
+echo "wasm features: $wasm_features"
+rm -rf "$probe_dir"
 
 # ---------------------------------------------------------------------------
 # Smoke test: a real module load plus one kernel per risky compile flag
@@ -386,6 +505,11 @@ wasm_features=$(printf '%s\n' "$verify_out" | sed -n 's/^target_features: //p' |
 echo '=== smoke test (node) ==='
 cat > "$staging/opencv-wasm-smoke.js" <<'JS'
 const path = require('path');
+
+// Usage: opencv-wasm-smoke.js <imgcodecs>. The flags this script is asked to
+// check are the ones the caller ordered, so a requested feature that turns out
+// to be unreachable is a failure and not a footnote.
+const wantCodecs = process.argv[2] === 'true';
 
 // A 1x1 PNG. Decoding it from bytes proves the imgcodecs path end to end,
 // including the bundled libpng - the reason this option exists is to stop
@@ -429,8 +553,13 @@ function check(cv) {
             const decoded = cv.imdecode(encoded, flags);
             cleanup.push(encoded, decoded);
             checks.push(['imdecode(png)', decoded.rows === 1 && decoded.cols === 1]);
+            console.log('imdecode: callable, IMREAD_GRAYSCALE enum ' +
+                        (typeof cv.IMREAD_GRAYSCALE === 'number' ? 'present' : 'absent'));
         } else {
-            console.log('imdecode: not bound (imgcodecs disabled)');
+            // Not a soft failure: imgcodecs was asked for, and the whole point of
+            // it is decoding bytes without going through a canvas.
+            console.log('imdecode: not bound');
+            checks.push(['imdecode bound', !wantCodecs]);
         }
     } catch (error) {
         console.error('smoke test threw:', error);
@@ -451,7 +580,7 @@ Promise.resolve(typeof loaded === 'function' ? loaded() : loaded).then(ready).th
     process.exit(1);
 });
 JS
-( cd "$staging" && node opencv-wasm-smoke.js )
+( cd "$staging" && node opencv-wasm-smoke.js "$imgcodecs" )
 echo 'smoke test passed'
 
 # ---------------------------------------------------------------------------
@@ -460,13 +589,17 @@ echo 'smoke test passed'
 echo '=== licenses ==='
 mkdir -p "$staging/licenses"
 cp -f "$opencv_dir/LICENSE" "$staging/licenses/opencv.txt"
+# The loop variables are deliberately not called `name`/`path`: `name` holds the
+# package name built at the top of this script, and reusing it here silently
+# renamed the shipped zip to zlib.zip (last licence wins) and wrote that name
+# into BUILDINFO.json's package_file.
 for pair in "libjpeg-turbo:3rdparty/libjpeg-turbo/LICENSE.md" "libpng:3rdparty/libpng/LICENSE" "zlib:3rdparty/zlib/LICENSE"; do
-	name=${pair%%:*}
-	path=${pair#*:}
-	if [ -f "$opencv_dir/$path" ]; then
-		cp -f "$opencv_dir/$path" "$staging/licenses/$name.txt"
+	lic_name=${pair%%:*}
+	lic_path=${pair#*:}
+	if [ -f "$opencv_dir/$lic_path" ]; then
+		cp -f "$opencv_dir/$lic_path" "$staging/licenses/$lic_name.txt"
 	else
-		echo "warning: no licence text at $opencv_dir/$path" >&2
+		echo "warning: no licence text at $opencv_dir/$lic_path" >&2
 	fi
 done
 ls "$staging/licenses"
@@ -479,6 +612,12 @@ if [ "$threads" = true ]; then
 else
 	host_requirements='none'
 fi
+if [ "$imgcodecs" = true ]; then
+	config_note='platforms/js/opencv_js.config.py plus imgcodecs.imdecode, staged as opencv_js.config.py'
+else
+	config_note='platforms/js/opencv_js.config.py (upstream)'
+fi
+[ -n "$source_patches" ] || source_patches='none'
 emcc_version=$(emcc --version | head -n1 | sed 's/^emcc[^0-9]*//')
 cat > "$staging/BUILDINFO.json" <<EOF
 {
@@ -499,7 +638,8 @@ cat > "$staging/BUILDINFO.json" <<EOF
   "initial_memory": "$initial_memory",
   "maximum_memory": "$maximum_memory",
   "host_requirements": "$host_requirements",
-  "config": "platforms/js/opencv_js.config.py",
+  "config": "$config_note",
+  "source_patches": "$source_patches",
   "toolchain": "emscripten $emcc_version, python3 $(python3 --version | awk '{print $2}')",
   "built_utc": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "source_commit": "${BUILD_SOURCE_COMMIT:-unknown}",

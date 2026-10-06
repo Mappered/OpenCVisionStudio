@@ -46,7 +46,7 @@ on:
         type: boolean
         default: false
       imgcodecs:
-        description: Build the bundled codecs and bind cv.imdecode/cv.imencode
+        description: Build the bundled codecs (libpng/libjpeg/zlib) and bind cv.imdecode
         type: boolean
         default: true
       emsdk_version:
@@ -85,7 +85,7 @@ on:
         required: false
         default: false
       imgcodecs:
-        description: Build the bundled codecs and bind cv.imdecode/cv.imencode
+        description: Build the bundled codecs (libpng/libjpeg/zlib) and bind cv.imdecode
         type: boolean
         required: false
         default: true

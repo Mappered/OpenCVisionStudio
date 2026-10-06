@@ -109,7 +109,10 @@ holding it — a build does not have to use the subtree on this branch.
 
 Every package directory on `artifacts` contains the archive, `SHA256SUMS`, the
 licence texts and a `BUILDINFO.json` naming the modules, the flags, the
-toolchain and the wasm features actually present in the binary.
+toolchain and the wasm features actually present in the binary. The wasm entries
+also carry `flavor` (the directory name), `package_file` and
+`source_patches` — which upstream source files the recipe had to rewrite to get
+the build that was asked for, or `none`.
 
 ```sh
 git fetch origin artifacts
@@ -141,18 +144,23 @@ it.
 
 Cost: the module will refuse to instantiate on a browser without SIMD support
 (all current browsers have it), and the wasm gets somewhat larger. Verified, not
-assumed: the recipe reads the `target_features` custom section out of the wasm
-and fails the build if `+simd128` is absent when SIMD was requested. Nothing in
-this pipeline runs `wasm-opt`/binaryen afterwards, so that section is
-authoritative.
+assumed: the recipe disassembles the module and counts v128 instructions,
+failing the build if there are none when SIMD was requested. It counts
+instructions rather than reading a declaration because there is no declaration
+to read — the release link strips every custom section, `target_features`
+included.
 
 ### Image codecs — on by default
 
 `--cmake_option -DWITH_JPEG=ON -DWITH_PNG=ON -DBUILD_opencv_imgcodecs=ON` builds
-libjpeg-turbo, libpng and zlib into the module and binds `cv.imdecode` /
-`cv.imencode` — two entry points upstream leaves out of the js whitelist, so the
-recipe adds them to `opencv_js.config.py` at build time and stages the patched
-list into the package, so the exact list used always ships with it.
+libjpeg-turbo, libpng and zlib into the module and binds `cv.imdecode`, an entry
+point upstream leaves out twice over: the codecs are not in
+`opencv_js.config.py`, and `modules/imgcodecs/CMakeLists.txt` declares the module
+as `WRAP java objc python` — with no `js` in that list the module compiles and
+then contributes **no headers at all** to `bindings.cpp`, so nothing can be
+generated for it however the whitelist is written. The recipe fixes the
+declaration, adds the entry point to the list at build time, and stages the
+patched list into the package, so the exact list used always ships with it.
 
 This is the single biggest win available in the read path. Upstream's
 `cv.imread` accepts only a canvas or an `HTMLImageElement` and goes through
@@ -160,6 +168,16 @@ This is the single biggest win available in the read path. Upstream's
 DOM and paints two canvases; on a 20 MP frame that is hundreds of milliseconds
 and several hundred MB of peak canvas memory. With `cv.imdecode` the encoded
 bytes go straight into wasm and are decoded there.
+
+The write half, `cv.imencode`, is deliberately **not** bound. Its buffer is a
+`CV_OUT std::vector<uchar>&`, and embind has no marshalling for
+`std::vector<unsigned char>`: `with_vec_from_js_array` only rewrites *const*
+vector references (inputs), and `register_vector` is never called for the
+`unsigned char` instantiation — upstream registers `std::vector<char>` as
+`CharVector`, which is a different type — so the generated registration compiles
+and then throws `Cannot call imencode due to unbound types` on every call. A
+binding that exists and always fails is worse than no binding, so encoding stays
+where it is today: the canvas.
 
 Cost: the module grows by roughly 0.3–0.6 MB, and making use of it requires the
 application to hand over encoded bytes rather than a canvas.
@@ -242,16 +260,34 @@ recipe refuses to package unless:
 
 1. every artifact exists (`opencv.js`, plus `opencv_js.wasm` when not
    single-file);
-2. the wasm really declares `+simd128` when SIMD was requested, read out of the
-   `target_features` section of the actual binary (unwrapped from the base64
-   payload for a single-file build);
-3. `cv.imdecode` and `cv.imencode` are bound in the glue when image codecs were
-   requested, and `cv.imread` is present either way;
+2. the wasm really executes SIMD when SIMD was requested. This is read off the
+   binary, not off a declaration: the code section is disassembled with
+   binaryen's `wasm-dis` (shipped with the emsdk the recipe itself installs) and
+   the v128 mnemonics are counted, so a build that quietly ignored `-msimd128`
+   fails instead of shipping. A declaration-based check is not possible here —
+   the `-O3` link drops *every* custom section from the module, so there is no
+   `target_features` section to read, and no `name` or `producers` either. An
+   empty result is also what a same-source non-SIMD build scores, which is what
+   makes the count meaningful;
+3. `cv.matFromArray` is present in the glue (the helpers upstream writes in
+   JavaScript, and the base of the canvas-free image path), and when image codecs
+   were requested the wasm data section carries an `imdecode` registration.
+   Bound names live in the wasm — embind stores the name given to each
+   `.function(...)` there — so the glue is not where a binding can be seen; note
+   that the `imread` in the glue is a canvas helper from
+   `modules/js/src/helpers.js` and is present in every build;
 4. the module loads in node and runs a real kernel (`cv.blur` over a 64×64
    matrix, checking a pixel), plus a 1×1 PNG decoded through `cv.imdecode` when
    the codecs are in — which proves the codec path end to end, bundled libpng
-   included;
+   included, and is a hard failure rather than a footnote when the codecs were
+   requested;
 5. the exact whitelist config used is staged into the package.
+
+The feature list recorded in `BUILDINFO.json` comes from that same probe rather
+than from a declaration the module does not carry: `simd128` when v128
+instructions are present, plus `bulk-memory` when the module uses `memory.copy`
+or `memory.fill` — which it does, and which is worth naming because bulk memory
+is not part of the wasm MVP, even though every engine this app targets has it.
 
 ## Building the wasm package
 
@@ -274,7 +310,7 @@ gh workflow run build-opencv-wasm.yml --ref workflows -f threads=true
 | `simd` | `true` | `-msimd128` + `CV_ENABLE_INTRINSICS=ON` |
 | `threads` | `false` | `-DWITH_PTHREADS_PF=ON`, needs COOP/COEP on the host |
 | `single_file` | `false` | embed the wasm in `opencv.js` |
-| `imgcodecs` | `true` | bundle the codecs, bind `cv.imdecode`/`cv.imencode` |
+| `imgcodecs` | `true` | bundle the codecs, declare imgcodecs a js wrapper, bind `cv.imdecode` |
 | `emsdk_version` | `6.0.9` | the emscripten that last built this source |
 | `publish` | `true` | push the package to `artifacts` |
 
@@ -297,13 +333,16 @@ git checkout origin/artifacts -- opencv/4.14.0/wasm32/core-imgproc-simd-imgcodec
 
 Copy `opencv.js` and, for a non-single-file build, `opencv_js.wasm` into
 `vendor/` on `Develop` — **both**, unchanged, side by side. Then confirm what
-actually arrived before trusting it:
+actually arrived before trusting it. The bound names are not in the glue, so look
+for them in the wasm:
 
 ```sh
-node -e "const s=require('fs').readFileSync('vendor/opencv.js','utf8');
-         console.log('simd:', /+simd128/.test(s), 'imdecode:', /\bimdecode\b/.test(s))"
+node -e "const fs=require('fs'); const w=fs.readFileSync('vendor/opencv_js.wasm');
+         console.log('bytes:', w.length, 'imdecode name:', w.includes(Buffer.from('imdecode')))"
 ```
 
-and compare the wasm's `target_features` with the `wasm_features` field of the
-`BUILDINFO.json` that came with it. The load order in `index.html` is
+The `wasm_features` field of the `BUILDINFO.json` that came with the package is
+derived the same way, by disassembling the module, so it describes the bytes you
+actually received. (Do not expect a `target_features` section: this toolchain's
+release link strips every custom section.) The load order in `index.html` is
 `vendor/opencv.js` before anything that uses `cv`.
